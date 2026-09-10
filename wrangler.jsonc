@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "cf-first",
+  "main": "server/index.ts",
+  "compatibility_date": "2024-11-01",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application"
+  }
+  // =========================================================================
+  // Cloudflare D1 關聯式資料庫綁定範例 (欲啟用時請取消下方註解)
+  //
+  // 步驟：
+  // 1. 執行終端機指令建立資料庫：
+  //    pnpm exec wrangler d1 create my-database
+  // 2. 將回傳的 database_id 填入下方配置：
+  // =========================================================================
+  // "d1_databases": [
+  //   {
+  //     "binding": "DB",
+  //     "database_name": "my-database",
+  //     "database_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+  //   }
+  // ]
+}

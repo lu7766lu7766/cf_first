@@ -1,0 +1,1 @@
+{"root":["./src/main.ts","./src/vite-env.d.ts","./src/types/api.ts","./src/app.vue","./src/components/apitestercard.vue","./src/components/databasedemocard.vue","./src/components/edgeinfocard.vue","./src/components/headernav.vue"],"version":"5.9.3"}

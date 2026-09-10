@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <defs>
+    <linearGradient id="cf-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F38020" />
+      <stop offset="100%" stop-color="#FAAD3F" />
+    </linearGradient>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="2" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+  <rect width="48" height="48" rx="10" fill="#12161F" />
+  <!-- Cloudflare stylized edge waves -->
+  <path d="M33 32H15a6 6 0 0 1-2.4-11.5 8 8 0 0 1 15-4.2A7 7 0 0 1 33 32z" fill="url(#cf-grad)" filter="url(#glow)"/>
+  <circle cx="34" cy="28" r="4" fill="#FAAD3F" />
+</svg>
