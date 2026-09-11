@@ -18,8 +18,8 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "cf-first-db",
-      "database_id": "cf-first-local-db"
+      "database_name": "cf_first",
+      "database_id": "f420a226-f469-4d68-8d8a-02eeafab1a93"
     }
   ]
 }

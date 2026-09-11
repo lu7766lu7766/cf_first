@@ -156,15 +156,18 @@ function ensureDbSymlink(): { symlink: string; target: string } | null {
   }
 }
 
+const isRemote = args.includes('--remote')
+
 /**
- * 透過 Wrangler D1 執行 SQL 指令（使用暫存檔防止引號跳脫問題）
+ * 透過 Wrangler D1 執行 SQL 指令（使用暫存檔防止引號跳脫問題，支援 --remote）
  */
 function runD1Sql(sql: string): void {
   const projectRoot = path.join(__dirname, '..')
   const tempFile = path.join(__dirname, `temp_${Date.now()}_exec.sql`)
   fs.writeFileSync(tempFile, sql, 'utf-8')
+  const targetFlag = isRemote ? '--remote' : '--local'
   try {
-    execSync(`pnpm exec wrangler d1 execute DB --local --file="${tempFile}"`, {
+    execSync(`pnpm exec wrangler d1 execute DB ${targetFlag} --file="${tempFile}"`, {
       stdio: 'pipe',
       cwd: projectRoot
     })
@@ -174,13 +177,14 @@ function runD1Sql(sql: string): void {
 }
 
 /**
- * 透過 Wrangler D1 執行查詢並以 JSON 解析回傳
+ * 透過 Wrangler D1 執行查詢並以 JSON 解析回傳（支援 --remote）
  */
 function queryD1Json<T = any>(sql: string): T[] {
   const projectRoot = path.join(__dirname, '..')
   const escapedSql = sql.replace(/"/g, '\\"')
+  const targetFlag = isRemote ? '--remote' : '--local'
   try {
-    const output = execSync(`pnpm exec wrangler d1 execute DB --local --json --command="${escapedSql}"`, {
+    const output = execSync(`pnpm exec wrangler d1 execute DB ${targetFlag} --json --command="${escapedSql}"`, {
       cwd: projectRoot,
       encoding: 'utf-8',
       stdio: 'pipe'
@@ -429,7 +433,7 @@ export default class ${className} extends BaseSeeder {
     }
 
     case 'migration:run': {
-      console.log('🚀 開始執行 Knex TypeScript 資料庫遷移 (Migrations)...')
+      console.log(`🚀 開始執行 Knex TypeScript 資料庫遷移 (${isRemote ? '遠端 Cloudflare D1' : '本機 D1 SQLite'})...`)
       const dir = path.join(rootDir, 'database/migrations')
       if (!fs.existsSync(dir)) {
         console.log('⚠️ 未找到 migrations 目錄。')
@@ -446,7 +450,7 @@ export default class ${className} extends BaseSeeder {
 
       if (pendingFiles.length === 0) {
         console.log('\x1b[32m✔ 所有遷移皆已套用完成，資料庫處於最新狀態 (Database is up to date)。\x1b[0m')
-        ensureDbSymlink()
+        if (!isRemote) ensureDbSymlink()
         break
       }
 
@@ -459,7 +463,7 @@ export default class ${className} extends BaseSeeder {
       let successCount = 0
       for (const file of pendingFiles) {
         const filePath = path.join(dir, file)
-        console.log(`   \x1b[36m▶ [COMPILE & RUN]\x1b[0m ${file} -> 本機 D1 SQLite`)
+        console.log(`   \x1b[36m▶ [COMPILE & RUN]\x1b[0m ${file} -> ${isRemote ? '遠端 Cloudflare D1' : '本機 D1 SQLite'}`)
         try {
           const migrationModule = await import(filePath)
           const MigrationClass = migrationModule.default
@@ -638,21 +642,22 @@ export default class ${className} extends BaseSeeder {
     }
 
     case 'db:seed': {
-      console.log('🌱 載入種子檔案並執行 (Seeder)...')
+      console.log(`🌱 載入種子檔案並執行 (${isRemote ? '遠端 Cloudflare D1' : '本機 D1 SQLite'})...`)
       try {
         const { Hash } = await import('./core/hash')
         const hashedRoot = await Hash.make('root')
-        const seedSql = `INSERT OR REPLACE INTO users (id, username, email, password, full_name, created_at, updated_at) VALUES (1, 'root', 'root@example.com', '${hashedRoot}', '系統管理員 Root', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);`
+        const seedSql = `
+INSERT OR REPLACE INTO users (id, username, email, password, full_name, created_at, updated_at) 
+VALUES (1, 'root', 'root@example.com', '${hashedRoot}', '系統管理員 Root', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 
-        console.log('   \x1b[36m▶ [SEED]\x1b[0m 寫入 root/root 至本機 D1 SQLite 資料庫...')
+INSERT OR IGNORE INTO notes (id, title, content, created_at, updated_at) 
+VALUES (1, '【種子筆記 1】探索 AdonisJS 7 開發體驗', '採用 Class Controller、Active Record 與 VineJS 驗證', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+`
+        console.log(`   \x1b[36m▶ [SEED]\x1b[0m 寫入初始種子資料至 ${isRemote ? '遠端 Cloudflare D1' : '本機 D1 SQLite'}...`)
         runD1Sql(seedSql)
 
-        const seederModule = await import('./database/seeders/main_seeder')
-        const SeederClass = seederModule.default
-        const seeder = new SeederClass()
-        await seeder.run()
         console.log('\x1b[32m✔ 種子資料注入完成！\x1b[0m')
-        ensureDbSymlink()
+        if (!isRemote) ensureDbSymlink()
       } catch (e) {
         console.error('❌ 種子執行失敗:', e)
       }
