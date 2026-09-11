@@ -7,7 +7,8 @@
 
 ## ✨ 特色亮點
 
-- **🎯 AdonisJS 7 路由體驗**：支援 Tuple 路由 `router.get('/path', [Controller, 'action'])`、RESTful `router.resource()` 與路由群組中介層管線。
+- **🎯 AdonisJS 7 路由與群組體驗**：支援 Tuple 路由 `router.get('/path', [Controller, 'action'])`、RESTful `router.resource()` 與鏈式路由群組 `router.group(() => { ... }).prefix('/api').use([...])`，支援多層巢狀群組。
+- **✨ 統一 API 格式化中介層 (`ApiFormatMiddleware`)**：Controller 可直接回傳物件或呼叫 `ctx.response.json()`，中介層自動統一封裝為 `{ code: [0], data: ..., time: '... ms' }` 格式，並統整例外錯誤處理。
 - **🧩 IoC Container 與依賴注入**：支援 `@inject()` 裝飾器，Controller 建構子可自動解析注入 Service 或 Repository。
 - **📦 Active Record BaseModel**：提供熟悉的 Lucid ORM 語法（`Model.all()`, `Model.find()`, `Model.create()`, `model.save()`, `model.delete()` 與生命週期 Hooks）。
 - **🗄️ 多資料庫連線驅動與事務 (Transaction)**：
@@ -51,7 +52,8 @@ cf_first/
     ├── config/                  # 設定模組
     │   ├── database.ts          # 資料庫連線配置 (D1 / SQLite / PG / MySQL)
     │   ├── cors.ts              # CORS 跨來源資源共用設定
-    │   └── auth.ts              # Auth Guards 設定
+    │   ├── auth.ts              # Auth Guards 設定
+    │   └── body_parser.ts       # Body Parser 解析器配置 (JSON, Form, Multipart)
     ├── app/                     # 業務邏輯層
     │   ├── controllers/         # AuthController, NotesController
     │   ├── models/              # User, Note

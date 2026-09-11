@@ -7,7 +7,7 @@ export function createHttpContext(c: Context<{ Bindings: Env }>): HttpContext {
   let bodyParsed = false
 
   const request: AdonisRequest = {
-    async all() {
+    async body() {
       if (!bodyParsed) {
         try {
           if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(c.req.method)) {
@@ -23,13 +23,76 @@ export function createHttpContext(c: Context<{ Bindings: Env }>): HttpContext {
         }
         bodyParsed = true
       }
-      const query = c.req.query()
-      return { ...query, ...(cachedBody || {}) }
+      return cachedBody || {}
+    },
+
+    qs() {
+      return c.req.query()
+    },
+
+    async all() {
+      const b = await this.body()
+      const query = this.qs()
+      return { ...query, ...b }
     },
 
     async input(key: string, defaultValue?: any) {
       const data = await this.all()
       return data[key] !== undefined ? data[key] : defaultValue
+    },
+
+    async only(keys: string[]) {
+      const allData = await this.all()
+      const result: Record<string, any> = {}
+      for (const k of keys) {
+        if (allData[k] !== undefined) {
+          result[k] = allData[k]
+        }
+      }
+      return result
+    },
+
+    async except(keys: string[]) {
+      const allData = await this.all()
+      const result: Record<string, any> = { ...allData }
+      for (const k of keys) {
+        delete result[k]
+      }
+      return result
+    },
+
+    async file(key: string) {
+      try {
+        const formData = await c.req.formData()
+        const item: any = formData.get(key)
+        return item && typeof item === 'object' && typeof item.name === 'string' ? (item as File) : null
+      } catch {
+        return null
+      }
+    },
+
+    async files(key?: string) {
+      try {
+        const formData = await c.req.formData()
+        const filesList: File[] = []
+        if (key) {
+          const items: any[] = formData.getAll(key)
+          for (const item of items) {
+            if (item && typeof item === 'object' && typeof item.name === 'string') {
+              filesList.push(item as File)
+            }
+          }
+          return filesList
+        }
+        formData.forEach((val: any) => {
+          if (val && typeof val === 'object' && typeof val.name === 'string') {
+            filesList.push(val as File)
+          }
+        })
+        return filesList
+      } catch {
+        return []
+      }
     },
 
     header(name: string) {
@@ -70,6 +133,7 @@ export function createHttpContext(c: Context<{ Bindings: Env }>): HttpContext {
     },
 
     json(data: any, status?: number) {
+      this.lazyBody = { content: [data] }
       const finalStatus = status || statusCode
       const headers: Record<string, string> = {
         'Content-Type': 'application/json'
@@ -85,6 +149,7 @@ export function createHttpContext(c: Context<{ Bindings: Env }>): HttpContext {
     },
 
     send(data: any) {
+      this.lazyBody = { content: [data] }
       if (typeof data === 'object' && !(data instanceof Response)) {
         return this.json(data)
       }
@@ -98,6 +163,8 @@ export function createHttpContext(c: Context<{ Bindings: Env }>): HttpContext {
       })
       return _lastResponse
     },
+
+    lazyBody: { content: [] },
 
     getResponse() {
       return _lastResponse

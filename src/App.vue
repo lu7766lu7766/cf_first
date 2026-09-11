@@ -38,6 +38,10 @@ const testRegister = async () => {
       body: JSON.stringify(body)
     })
     const data = await res.json()
+    const userToken = data.data?.token || data.token
+    if (userToken) {
+      token.value = userToken
+    }
     logResult('POST /api/auth/register', res.status, data)
   } catch (e) {
     logResult('POST /api/auth/register (Error)', 500, String(e))
@@ -57,8 +61,9 @@ const testLogin = async () => {
       body: JSON.stringify(body)
     })
     const data = await res.json()
-    if (data.token) {
-      token.value = data.token
+    const userToken = data.data?.token || data.token
+    if (userToken) {
+      token.value = userToken
     }
     logResult('POST /api/auth/login', res.status, data)
   } catch (e) {
@@ -163,6 +168,17 @@ const testError = async () => {
     logResult('GET /api/error-test (Error)', 500, String(e))
   }
 }
+
+// 11. ApiFormatMiddleware 格式整合測試
+const testFormat = async () => {
+  try {
+    const res = await fetch('/api/format-test')
+    const data = await res.json()
+    logResult('GET /api/format-test', res.status, data)
+  } catch (e) {
+    logResult('GET /api/format-test (Error)', 500, String(e))
+  }
+}
 </script>
 
 <template>
@@ -181,6 +197,7 @@ const testError = async () => {
       <button @click="testTransaction">8. POST /api/notes/transaction-test (DB 事務)</button>
       <button @click="testMacro">9. GET /api/macro-test (Response Macro)</button>
       <button @click="testError">10. GET /api/error-test (Exception Handler)</button>
+      <button @click="testFormat">11. GET /api/format-test (格式中介層)</button>
     </div>
 
     <hr />

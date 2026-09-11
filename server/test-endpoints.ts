@@ -19,7 +19,14 @@ async function runTests() {
   {
     const res = await app.request('/api/health')
     const data = await res.json<any>()
-    assert(res.status === 200 && data.status === 'online', '1. 健康檢查 GET /api/health')
+    assert(
+      res.status === 200 &&
+      Array.isArray(data.code) &&
+      data.code[0] === 0 &&
+      data.data.status === 'online' &&
+      typeof data.time === 'string',
+      '1. 健康檢查 GET /api/health'
+    )
   }
 
   // 2. POST /api/auth/register
@@ -35,8 +42,14 @@ async function runTests() {
       })
     })
     const data = await res.json<any>()
-    userToken = data.token
-    assert(res.status === 201 && !!data.token, '2. 註冊帳號 POST /api/auth/register (回傳 JWT Token)')
+    userToken = data.data?.token
+    assert(
+      res.status === 200 &&
+      Array.isArray(data.code) &&
+      data.code[0] === 0 &&
+      !!userToken,
+      '2. 註冊帳號 POST /api/auth/register (回傳 JWT Token 與統一格式)'
+    )
   }
 
   // 3. POST /api/auth/login
@@ -50,28 +63,52 @@ async function runTests() {
       })
     })
     const data = await res.json<any>()
-    assert(res.status === 200 && !!data.token, '3. 登入取得 Token POST /api/auth/login')
+    assert(
+      res.status === 200 &&
+      Array.isArray(data.code) &&
+      data.code[0] === 0 &&
+      !!data.data?.token,
+      '3. 登入取得 Token POST /api/auth/login'
+    )
   }
 
   // 4. GET /api/auth/me (Auth Guard 401 & 200)
   {
-    // 未攜帶 Token 應回傳 401
+    // 未攜帶 Token 應被攔截並以統一格式輸出異常
     const resUnauthorized = await app.request('/api/auth/me')
-    assert(resUnauthorized.status === 401, '4a. Auth Guard 攔截未授權存取 (401 Unauthorized)')
+    const dataUnauth = await resUnauthorized.json<any>()
+    assert(
+      resUnauthorized.status === 200 &&
+      (dataUnauth.status === 401 || dataUnauth.code === 'E_UNAUTHORIZED_ACCESS') &&
+      typeof dataUnauth.time === 'string',
+      '4a. Auth Guard 攔截未授權存取 (格式化 401 異常)'
+    )
 
     // 攜帶 Token 應成功回傳 200
     const resAuthorized = await app.request('/api/auth/me', {
       headers: { Authorization: `Bearer ${userToken}` }
     })
     const data = await resAuthorized.json<any>()
-    assert(resAuthorized.status === 200 && data.user.email === 'test_user@example.com', '4b. Auth Guard 驗證通過 GET /api/auth/me')
+    assert(
+      resAuthorized.status === 200 &&
+      Array.isArray(data.code) &&
+      data.code[0] === 0 &&
+      data.data?.user?.email === 'test_user@example.com',
+      '4b. Auth Guard 驗證通過 GET /api/auth/me'
+    )
   }
 
   // 5. GET /api/notes (Model Query)
   {
     const res = await app.request('/api/notes')
     const data = await res.json<any>()
-    assert(res.status === 200 && Array.isArray(data.data), '5. 筆記清單查詢 GET /api/notes (Model Active Record)')
+    assert(
+      res.status === 200 &&
+      Array.isArray(data.code) &&
+      data.code[0] === 0 &&
+      Array.isArray(data.data?.data),
+      '5. 筆記清單查詢 GET /api/notes (Model Active Record)'
+    )
   }
 
   // 6. POST /api/notes (Validation 422 攔截測試)
@@ -84,7 +121,14 @@ async function runTests() {
       })
     })
     const data = await res.json<any>()
-    assert(res.status === 422 && Array.isArray(data.errors), '6. VineJS Class Validator 欄位驗證攔截 (422 Unprocessable Entity)', data)
+    assert(
+      res.status === 200 &&
+      Array.isArray(data.errors) &&
+      data.code === 'E_VALIDATION_ERROR' &&
+      typeof data.time === 'string',
+      '6. VineJS Class Validator 欄位驗證攔截 (422 格式化輸出)',
+      data
+    )
   }
 
   // 7. POST /api/notes (成功建立 Note)
@@ -99,39 +143,107 @@ async function runTests() {
       })
     })
     const data = await res.json<any>()
-    createdNoteId = data.data.id
-    assert(res.status === 201 && data.data.title === '自動化測試筆記', '7. 筆記新增 POST /api/notes')
+    createdNoteId = data.data?.data?.id
+    assert(
+      res.status === 200 &&
+      Array.isArray(data.code) &&
+      data.code[0] === 0 &&
+      data.data?.data?.title === '自動化測試筆記',
+      '7. 筆記新增 POST /api/notes'
+    )
   }
 
   // 8. GET /api/notes/:id 與 DELETE /api/notes/:id (Resource 路由)
   {
     const resShow = await app.request(`/api/notes/${createdNoteId}`)
     const dataShow = await resShow.json<any>()
-    assert(resShow.status === 200 && dataShow.data.id === createdNoteId, `8a. Resource Show GET /api/notes/${createdNoteId}`)
+    assert(
+      resShow.status === 200 &&
+      dataShow.code[0] === 0 &&
+      dataShow.data?.data?.id === createdNoteId,
+      `8a. Resource Show GET /api/notes/${createdNoteId}`
+    )
 
     const resDel = await app.request(`/api/notes/${createdNoteId}`, { method: 'DELETE' })
-    assert(resDel.status === 200, `8b. Resource Destroy DELETE /api/notes/${createdNoteId}`)
+    const dataDel = await resDel.json<any>()
+    assert(
+      resDel.status === 200 &&
+      dataDel.code[0] === 0,
+      `8b. Resource Destroy DELETE /api/notes/${createdNoteId}`
+    )
   }
 
   // 9. POST /api/notes/transaction-test (Database Transaction)
   {
     const res = await app.request('/api/notes/transaction-test', { method: 'POST' })
     const data = await res.json<any>()
-    assert(res.status === 200 && data.success === true, '9. 資料庫事務 Database.transaction()')
+    assert(
+      res.status === 200 &&
+      data.code[0] === 0 &&
+      data.data?.success === true,
+      '9. 資料庫事務 Database.transaction()'
+    )
   }
 
   // 10. GET /api/macro-test (Response Macro)
   {
     const res = await app.request('/api/macro-test')
     const data = await res.json<any>()
-    assert(res.status === 200 && data.success === true && !!data.meta.framework, '10. 自訂 Response Macro 巨集測試')
+    assert(
+      res.status === 200 &&
+      data.code[0] === 0 &&
+      data.data?.success === true &&
+      !!data.data?.meta?.framework,
+      '10. 自訂 Response Macro 巨集測試'
+    )
   }
 
   // 11. GET /api/error-test (AppExceptionHandler 全域異常捕獲)
   {
     const res = await app.request('/api/error-test')
     const data = await res.json<any>()
-    assert(res.status === 400 && data.code === 'E_SAMPLE_ERROR', '11. AppExceptionHandler 捕捉自訂 HttpException')
+    assert(
+      res.status === 200 &&
+      data.code === 'E_SAMPLE_ERROR' &&
+      typeof data.time === 'string',
+      '11. 全域異常格式化捕獲自訂 HttpException'
+    )
+  }
+
+  // 12. POST /api/body-parser-test (AdonisJS BodyParser: body, qs, only, except)
+  {
+    const res = await app.request('/api/body-parser-test?source=test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'AdonisBody', password: 'secret', extra: 123 })
+    })
+    const data = await res.json<any>()
+    assert(
+      res.status === 200 &&
+      data.code[0] === 0 &&
+      data.data?.body?.name === 'AdonisBody' &&
+      data.data?.qs?.source === 'test' &&
+      data.data?.only?.name === 'AdonisBody' &&
+      data.data?.only?.password === undefined &&
+      data.data?.except?.password === undefined &&
+      data.data?.except?.name === 'AdonisBody',
+      '12. AdonisJS Body Parser (body, qs, only, except)'
+    )
+  }
+
+  // 13. GET /api/format-test (ApiFormatMiddleware 格式整合)
+  {
+    const res = await app.request('/api/format-test')
+    const data = await res.json<any>()
+    assert(
+      res.status === 200 &&
+      Array.isArray(data.code) &&
+      data.code[0] === 0 &&
+      data.data.message === '直接返回物件，由中介層格式化' &&
+      typeof data.time === 'string' &&
+      data.time.endsWith('ms'),
+      '13. ApiFormatMiddleware 格式整合輸出 (code: [0], data, time)'
+    )
   }
 
   console.log(`\n測試總結: ${passed} 通過, ${failed} 失敗`)

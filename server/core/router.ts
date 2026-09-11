@@ -25,12 +25,37 @@ export class Route {
   }
 }
 
+function combinePaths(prefix: string, path: string): string {
+  const p = prefix ? prefix.trim() : ''
+  const sub = path ? path.trim() : ''
+  if (!p) {
+    return sub.startsWith('/') ? sub : `/${sub}`
+  }
+  const cleanPrefix = p.startsWith('/') ? p.replace(/\/+$/, '') : `/${p.replace(/\/+$/, '')}`
+  if (!sub || sub === '/') {
+    return cleanPrefix
+  }
+  const cleanSub = sub.startsWith('/') ? sub : `/${sub}`
+  return `${cleanPrefix}${cleanSub}`
+}
+
 export class RouteGroup {
-  public routes: Route[] = []
+  public children: (Route | RouteGroup)[] = []
   private groupPrefix = ''
   private groupMiddlewares: MiddlewareHandler[] = []
 
-  constructor(private callback: () => void) {}
+  constructor(callback?: () => void) {
+    if (callback) {
+      AdonisRouter.pushGroup(this)
+      callback()
+      AdonisRouter.popGroup()
+    }
+  }
+
+  add(child: Route | RouteGroup): this {
+    this.children.push(child)
+    return this
+  }
 
   prefix(p: string): this {
     this.groupPrefix = p
@@ -46,41 +71,55 @@ export class RouteGroup {
     return this
   }
 
-  applyGroup(): void {
-    // 執行群組回呼以收集子路由
-    AdonisRouter.setCurrentGroup(this)
-    this.callback()
-    AdonisRouter.setCurrentGroup(null)
+  /**
+   * 遞迴解析並展開此群組內所有子路由，套用 prefix 與中介層
+   */
+  getRoutes(parentPrefix = '', parentMiddlewares: MiddlewareHandler[] = []): Route[] {
+    const cleanGroupPrefix = this.groupPrefix
+      ? (this.groupPrefix.startsWith('/') ? this.groupPrefix : `/${this.groupPrefix}`).replace(/\/+$/, '')
+      : ''
+    const currentPrefix = parentPrefix + cleanGroupPrefix
+    const currentMiddlewares = [...parentMiddlewares, ...this.groupMiddlewares]
 
-    // 套用群組 prefix 與 middlewares
-    for (const route of this.routes) {
-      if (this.groupPrefix) {
-        route.path = this.groupPrefix + (route.path.startsWith('/') ? route.path : `/${route.path}`)
+    const flatRoutes: Route[] = []
+    for (const child of this.children) {
+      if (child instanceof Route) {
+        const fullPath = combinePaths(currentPrefix, child.path)
+        const resolvedRoute = new Route(child.method, fullPath, child.action)
+        resolvedRoute.middlewares = [...currentMiddlewares, ...child.middlewares]
+        flatRoutes.push(resolvedRoute)
+      } else if (child instanceof RouteGroup) {
+        flatRoutes.push(...child.getRoutes(currentPrefix, currentMiddlewares))
       }
-      route.middlewares.unshift(...this.groupMiddlewares)
     }
+    return flatRoutes
   }
 }
 
 export class AdonisRouter {
-  private static registeredRoutes: Route[] = []
-  private static currentGroup: RouteGroup | null = null
+  private static registeredNodes: (Route | RouteGroup)[] = []
+  private static groupStack: RouteGroup[] = []
   private static exceptionHandler: HttpExceptionHandler = new HttpExceptionHandler()
+  private static globalMiddlewares: MiddlewareHandler[] = []
 
   static setExceptionHandler(handler: HttpExceptionHandler) {
     this.exceptionHandler = handler
   }
 
-  static setCurrentGroup(group: RouteGroup | null) {
-    this.currentGroup = group
+  static pushGroup(group: RouteGroup) {
+    this.groupStack.push(group)
+  }
+
+  static popGroup() {
+    this.groupStack.pop()
   }
 
   private static addRoute(method: string, path: string, action: RouteAction): Route {
     const route = new Route(method.toUpperCase(), path, action)
-    if (this.currentGroup) {
-      this.currentGroup.routes.push(route)
+    if (this.groupStack.length > 0) {
+      this.groupStack[this.groupStack.length - 1].add(route)
     } else {
-      this.registeredRoutes.push(route)
+      this.registeredNodes.push(route)
     }
     return route
   }
@@ -118,22 +157,63 @@ export class AdonisRouter {
   }
 
   /**
-   * 路由群組
+   * 路由群組 (Route Group)
+   * 支援 .prefix('/api') 與 .use([middleware]) 鏈式呼叫，以及巢狀群組
    */
   static group(callback: () => void): RouteGroup {
-    const group = new RouteGroup(callback)
-    group.applyGroup()
-    for (const r of group.routes) {
-      this.registeredRoutes.push(r)
+    const group = new RouteGroup()
+    if (this.groupStack.length > 0) {
+      this.groupStack[this.groupStack.length - 1].add(group)
+    } else {
+      this.registeredNodes.push(group)
     }
+    this.pushGroup(group)
+    callback()
+    this.popGroup()
     return group
+  }
+
+  /**
+   * 取得所有已展開之平坦化路由
+   */
+  static getRoutes(): Route[] {
+    const flatRoutes: Route[] = []
+    for (const node of this.registeredNodes) {
+      if (node instanceof Route) {
+        flatRoutes.push(node)
+      } else if (node instanceof RouteGroup) {
+        flatRoutes.push(...node.getRoutes())
+      }
+    }
+    return flatRoutes
+  }
+
+  /**
+   * 註冊全域中介層 (AdonisJS router.use)
+   */
+  static use(middlewares: MiddlewareHandler | MiddlewareHandler[]): void {
+    if (Array.isArray(middlewares)) {
+      this.globalMiddlewares.push(...middlewares)
+    } else {
+      this.globalMiddlewares.push(middlewares)
+    }
+  }
+
+  /**
+   * 清除所有已註冊之路由 (供測試使用)
+   */
+  static clear(): void {
+    this.registeredNodes = []
+    this.groupStack = []
+    this.globalMiddlewares = []
   }
 
   /**
    * 將所有已定義的 Adonis 路由註冊至 Hono App
    */
   static mountToHono(honoApp: Hono<{ Bindings: Env }>): void {
-    for (const route of this.registeredRoutes) {
+    const allRoutes = this.getRoutes()
+    for (const route of allRoutes) {
       const honoMethod = route.method.toLowerCase() as 'get' | 'post' | 'put' | 'patch' | 'delete'
 
       if (typeof honoApp[honoMethod] === 'function') {
@@ -144,13 +224,28 @@ export class AdonisRouter {
 
           try {
             let actionResponse: Response | null = null
+            const allMiddlewares = [...AdonisRouter.globalMiddlewares, ...route.middlewares]
 
             // 執行中介層管線 (Middleware Pipeline)
             let middlewareIndex = 0
             const next = async (): Promise<void> => {
-              if (middlewareIndex < route.middlewares.length) {
-                const currentMiddleware = route.middlewares[middlewareIndex++]
-                await currentMiddleware(ctx, next)
+              if (middlewareIndex < allMiddlewares.length) {
+                const rawMiddleware = allMiddlewares[middlewareIndex++]
+                let res: any
+                if (typeof rawMiddleware === 'function') {
+                  if (rawMiddleware.prototype && typeof rawMiddleware.prototype.handle === 'function') {
+                    const instance: any = Container.make(rawMiddleware as any)
+                    res = await instance.handle(ctx, next)
+                  } else {
+                    res = await (rawMiddleware as any)(ctx, next)
+                  }
+                } else if (rawMiddleware && typeof (rawMiddleware as any).handle === 'function') {
+                  res = await (rawMiddleware as any).handle(ctx, next)
+                }
+
+                if (res instanceof Response) {
+                  actionResponse = res
+                }
               } else {
                 // 執行 Controller Action
                 let result: any
@@ -163,6 +258,10 @@ export class AdonisRouter {
                   result = await (instance as any)[actionName](ctx)
                 } else if (typeof route.action === 'function') {
                   result = await route.action(ctx)
+                }
+
+                if (result !== undefined && !(result instanceof Response)) {
+                  ctx.response.lazyBody = { content: [result] }
                 }
 
                 if (result instanceof Response) {
