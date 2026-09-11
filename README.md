@@ -140,7 +140,7 @@ pnpm install
 開啟瀏覽器訪問 `http://localhost:5173`，打開 **DevTools (F12) -> Console**，點擊按鈕即可測試各項 API。
 
 ### 3. 執行後端全自動整合測試
-專案內建 13 項 API 功能整合測試（涵蓋 Auth Token、422 驗證、CRUD、Resource、Transaction、Macro 與 Exception Handler）：
+專案內建 30 項 API 功能整合測試（涵蓋 Auth Token、422 驗證、CRUD、Resource、Transaction 隔離等級與 forUpdate、批次寫入、Macro 與 Exception Handler）：
 ```bash
 pnpm exec tsx server/test-endpoints.ts
 ```
@@ -152,6 +152,115 @@ pnpm run type-check
 
 # 打包生產版本
 pnpm run build
+```
+
+---
+
+## 🔏 資料庫事務 (Transaction)、隔離等級 (Isolation Level) 與悲觀鎖 (forUpdate)
+
+本專案支援媲美 AdonisJS 7 / Lucid 的交易管理與鎖定機制，並為 Cloudflare D1 (SQLite) 與遠端 MySQL / PostgreSQL 做了底層方言自動適配。
+
+### 1. 事務與隔離等級 (`isolationLevel`)
+
+呼叫 `Database.transaction(callback, options)` 時，可傳入 `{ isolationLevel }` 設定交易隔離層級：
+
+```ts
+import { Database } from '../core/database'
+
+const result = await Database.transaction(async (trx) => {
+  // 透過 Model 進行操作 (綁定 trx)
+  const firstNote = await Note.query({ client: trx }).insert({
+    user_id: 1,
+    title: '事務筆記 A',
+    content: '第一筆成功寫入'
+  })
+
+  // 透過鏈式 useTransaction(trx) 進行操作
+  const secondNote = await Note.query().useTransaction(trx).insert({
+    user_id: 1,
+    title: '事務筆記 B',
+    content: '第二筆成功寫入'
+  })
+
+  // 亦可直接透過 trx.from()
+  // await trx.from('notes').insert({ ... })
+
+  return { firstNote, secondNote }
+}, {
+  // 支援 4 種標準隔離等級：
+  // 'read uncommitted' | 'read committed' | 'repeatable read' | 'serializable' (預設)
+  isolationLevel: 'serializable'
+})
+```
+
+#### 💡 方言適配說明：
+* **MySQL / PostgreSQL**：自動於交易開始時執行 `SET TRANSACTION ISOLATION LEVEL <LEVEL>`。
+* **Cloudflare D1 (SQLite)**：SQLite 預設運作於 Serializable 隔離等級；系統會將該等級綁定於 `trx.isolationLevel` 供邏輯存取，同時維護交易快照以實現安全 Rollback。
+
+---
+
+### 2. 悲觀排他鎖 (`forUpdate`) 與共享鎖 (`forShare`)
+
+在查詢鏈上呼叫 `.forUpdate()` 或 `.forShare()` 即可鎖定特定記錄：
+
+```ts
+await Database.transaction(async (trx) => {
+  // 1. Model 查詢排他鎖 (FOR UPDATE)
+  const lockedNote = await Note.query({ client: trx })
+    .where('id', 1)
+    .forUpdate()
+    .first()
+
+  // 2. QueryBuilder 排他鎖 (FOR UPDATE)
+  const rawLocked = await trx.from('notes')
+    .where('id', 1)
+    .forUpdate()
+    .first()
+
+  // 3. 指定鎖定表 (FOR UPDATE OF notes)
+  const tableLocked = await trx.from('notes')
+    .forUpdate('notes')
+    .first()
+
+  // 4. 共享鎖 (FOR SHARE)
+  const sharedLocked = await trx.from('notes')
+    .forShare()
+    .first()
+})
+```
+
+#### 💡 方言適配說明：
+* **MySQL / PostgreSQL**：編譯出原生 `SELECT ... FOR UPDATE` 或 `FOR SHARE` SQL 語句。
+* **Cloudflare D1 (SQLite) / 記憶體模式**：因 SQLite 不支援 `FOR UPDATE` 語法，QueryBuilder 會**自動安全略過語法拼接**（避免拋出 SQLite 語法錯誤），同時在查詢物件上保留鎖狀態旗標 `getLockMode()`。
+
+---
+
+### 3. QueryBuilder & Model 批次寫入與更新
+
+除了單筆操作外，系統完整支援批次與條件更新操作：
+
+```ts
+// 1. 批次多筆插入 (回傳多筆包含遞增 ID 的陣列)
+const batchNotes = await Database.from('notes').insert([
+  { user_id: 1, title: '批次筆記 1', content: '內容 1' },
+  { user_id: 1, title: '批次筆記 2', content: '內容 2' }
+])
+
+// 2. 條件批次更新 (自動更新 updated_at，回傳受影響筆數 number)
+const updatedCount = await Note.query()
+  .where('user_id', 1)
+  .update({ content: '全面更新內容' })
+
+// 3. 條件批次刪除 (回傳受影響筆數 number)
+const deletedCount = await Note.query()
+  .where('is_archived', true)
+  .delete()
+
+// 4. Model 批次實例建立 (觸發 before/afterCreate 等生命週期 Hooks)
+const createdModels = await Note.createMany([
+  { user_id: 1, title: '模型筆記 1', content: '內容 1' },
+  { user_id: 1, title: '模型筆記 2', content: '內容 2' }
+])
 ```
 
 ---

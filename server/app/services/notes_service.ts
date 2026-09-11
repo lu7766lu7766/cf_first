@@ -37,18 +37,28 @@ export class NotesService {
         const rawLockedNote = await qbQuery.first()
 
         // 3. 在事務中建立第一筆記錄
-        const firstNote = await trx.from("notes").insert({
+        const firstNote = await Note.query({ client: trx }).insert({
           user_id: 1,
           title: "事務測試紀錄 A (含 forUpdate 與隔離)",
           content: "第一筆成功寫入",
         })
+        // const firstNote = await trx.from("notes").insert({
+        //   user_id: 1,
+        //   title: "事務測試紀錄 A (含 forUpdate 與隔離)",
+        //   content: "第一筆成功寫入",
+        // })
 
         // 4. 在事務中建立第二筆記錄
-        const secondNote = await trx.from("notes").insert({
+        const secondNote = await Note.query().useTransaction(trx).insert({
           user_id: 1,
           title: "事務測試紀錄 B (含 forUpdate 與隔離)",
           content: "第二筆成功寫入",
         })
+        // const secondNote = await trx.from("notes").insert({
+        //   user_id: 1,
+        //   title: "事務測試紀錄 B (含 forUpdate 與隔離)",
+        //   content: "第二筆成功寫入",
+        // })
 
         return {
           success: true,

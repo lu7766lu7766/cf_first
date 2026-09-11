@@ -159,6 +159,57 @@ export class BaseModel {
     return instance
   }
 
+  static async createMany<T extends typeof BaseModel>(this: T, records: Array<Record<string, any>>): Promise<Array<InstanceType<T>>> {
+    const modelClass = this as typeof BaseModel
+    const now = dateTime.now()
+    const instances: Array<InstanceType<T>> = []
+    const payloadsForDb: Array<Record<string, any>> = []
+    const relations = getModelRelations(modelClass)
+
+    for (const attr of records) {
+      const instance = new (this as any)({
+        created_at: now,
+        updated_at: now,
+        ...attr
+      }) as InstanceType<T>
+
+      // 觸發 beforeCreate 與 beforeSave
+      for (const hook of modelClass.hooks.beforeCreate) await hook(instance)
+      for (const hook of modelClass.hooks.beforeSave) await hook(instance)
+
+      const payload: Record<string, any> = {}
+      for (const [k, v] of Object.entries(instance)) {
+        if (typeof v !== 'function' && !relations[k]) {
+          payload[k] = DateTime.isDateTime(v) ? (v as DateTime).toFormat('yyyy-MM-dd HH:mm:ss') : v
+        }
+      }
+      payloadsForDb.push(payload)
+      instances.push(instance)
+    }
+
+    const tableName = modelClass.getTableName()
+    const insertedList = await Database.from(tableName).insert(payloadsForDb)
+    const results = Array.isArray(insertedList) ? insertedList : [insertedList]
+
+    for (let i = 0; i < instances.length; i++) {
+      if (results[i]) {
+        Object.assign(instances[i], results[i])
+      }
+      if (instances[i].created_at && !DateTime.isDateTime(instances[i].created_at)) {
+        instances[i].created_at = (instances[i] as any).parseToDateTime(instances[i].created_at)
+      }
+      if (instances[i].updated_at && !DateTime.isDateTime(instances[i].updated_at)) {
+        instances[i].updated_at = (instances[i] as any).parseToDateTime(instances[i].updated_at)
+      }
+
+      // 觸發 afterCreate 與 afterSave
+      for (const hook of modelClass.hooks.afterCreate) await hook(instances[i])
+      for (const hook of modelClass.hooks.afterSave) await hook(instances[i])
+    }
+
+    return instances
+  }
+
   async save(): Promise<this> {
     const constructor = this.constructor as typeof BaseModel
     const tableName = constructor.getTableName()
@@ -422,6 +473,31 @@ export class ModelQueryBuilder<T extends typeof BaseModel = typeof BaseModel> im
 
   async exec(): Promise<Array<InstanceType<T>>> {
     return this.all()
+  }
+
+  /**
+   * 批次更新符合條件的資料 (AdonisJS Lucid query.update(payload))
+   * 自動維護 updated_at 時間戳，並回傳受影響筆數
+   */
+  async update(data: Record<string, any>): Promise<number> {
+    const now = dateTime.now().toISO() || new Date().toISOString()
+    const payload = { ...data, updated_at: data.updated_at || now }
+    return await this.dbQuery.update(payload)
+  }
+
+  /**
+   * 批次刪除符合條件的資料 (AdonisJS Lucid query.delete())
+   * 回傳受影響筆數
+   */
+  async delete(): Promise<number> {
+    return await this.dbQuery.delete()
+  }
+
+  /**
+   * 透過查詢鏈寫入單筆或多筆資料 (AdonisJS Lucid query.insert(payload))
+   */
+  async insert(data: Record<string, any> | Array<Record<string, any>>): Promise<any> {
+    return await this.dbQuery.insert(data)
   }
 
   /**

@@ -8,6 +8,7 @@ import { appConfig } from './config/app'
 import { databaseConfig } from './config/database'
 import { Note } from './app/models/note'
 import { User } from './app/models/user'
+import { Database } from './core/database'
 import { createHttpContext } from './core/context'
 import { AuthManager, JwtGuard } from './core/auth'
 
@@ -498,6 +499,45 @@ async function runTests() {
       user.id === 123 &&
       user.email === 'typed@example.com',
       '24. HttpContext.auth 強型別化 (AuthManager, getUserOrFail, JwtGuard 實例)'
+    )
+  }
+
+  // 25. QueryBuilder & ModelQueryBuilder 寫入操作 (批次 insert, update, delete, createMany)
+  {
+    const batchNotes = await Database.from('notes').insert([
+      { user_id: 1, title: '自動化測試批次筆記 1', content: '內容 1' },
+      { user_id: 1, title: '自動化測試批次筆記 2', content: '內容 2' }
+    ])
+
+    const updatedCount = await Note.query().where('title', '自動化測試批次筆記 1').update({
+      content: '已更新的內容 1'
+    })
+
+    const updatedNote = await Note.findBy('title', '自動化測試批次筆記 1')
+
+    const createdModels = await Note.createMany([
+      { user_id: 1, title: '自動化測試 Many 1', content: '多筆模型 1' },
+      { user_id: 1, title: '自動化測試 Many 2', content: '多筆模型 2' }
+    ])
+
+    const deletedCount = await Note.query().where('title', '自動化測試 Many 1').delete()
+
+    const insertedViaModel = await Note.query().insert({
+      user_id: 1,
+      title: '透過 ModelQuery 插入測試',
+      content: '內容'
+    })
+
+    assert(
+      Array.isArray(batchNotes) &&
+      batchNotes.length === 2 &&
+      updatedCount === 1 &&
+      updatedNote?.content === '已更新的內容 1' &&
+      createdModels.length === 2 &&
+      !!createdModels[0].id &&
+      deletedCount === 1 &&
+      insertedViaModel?.title === '透過 ModelQuery 插入測試',
+      '25. QueryBuilder & ModelQueryBuilder 寫入支援 (批次 insert, update, delete, createMany)'
     )
   }
 

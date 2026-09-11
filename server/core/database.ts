@@ -209,9 +209,41 @@ export class QueryBuilder<T = any> {
     return filtered as T[]
   }
 
-  async insert(data: Record<string, any>): Promise<any> {
+  async insert(data: Record<string, any> | Array<Record<string, any>>): Promise<any> {
     const env = this.getEnv()
     const now = dateTime.now().toISO() || new Date().toISOString()
+
+    if (Array.isArray(data)) {
+      if (data.length === 0) return []
+      const records = data.map((d) => ({
+        ...d,
+        created_at: d.created_at || now,
+        updated_at: d.updated_at || now
+      }))
+
+      if (env?.DB) {
+        try {
+          const keys = Array.from(new Set(records.flatMap((r) => Object.keys(r))))
+          const rowPlaceholder = `(${keys.map(() => '?').join(', ')})`
+          const placeholders = records.map(() => rowPlaceholder).join(', ')
+          const values = records.flatMap((r) => keys.map((k) => (r[k] === undefined ? null : r[k])))
+          const sql = `INSERT INTO ${this.options.table} (${keys.join(', ')}) VALUES ${placeholders}`
+          const res = await env.DB.prepare(sql).bind(...values).run()
+          const startId = res.meta.last_row_id ? res.meta.last_row_id - records.length + 1 : Date.now()
+          return records.map((r, i) => ({ id: r.id || startId + i, ...r }))
+        } catch (err) {
+          console.warn(`[Database] D1 批次插入異常 (${err})，切換至記憶體資料庫`)
+        }
+      }
+
+      const tableData = memoryDb.get(this.options.table) || []
+      const startId = tableData.length > 0 ? Math.max(...tableData.map((r: any) => r.id || 0)) + 1 : 1
+      const insertedList = records.map((r, idx) => ({ id: r.id || startId + idx, ...r }))
+      tableData.push(...insertedList)
+      memoryDb.set(this.options.table, tableData)
+      return insertedList
+    }
+
     const record = { ...data, created_at: data.created_at || now, updated_at: now }
 
     if (env?.DB) {
