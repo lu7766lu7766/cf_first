@@ -2,6 +2,7 @@ import { BaseModel } from '../../core/model'
 import type { DateTime } from '../../core/time'
 import { hasMany, type HasMany } from '../../core/relations'
 import { Note } from './note'
+import { AccessToken } from './access_token'
 
 export class User extends BaseModel {
   static table = 'users'
@@ -44,4 +45,11 @@ export class User extends BaseModel {
    */
   @hasMany(() => Note, { foreignKey: 'user_id' })
   notes!: HasMany<Note>
+
+  /**
+   * 使用者的一對多存取權杖關聯 (AdonisJS 原生 Access Tokens)
+   */
+  @hasMany(() => AccessToken, { foreignKey: 'tokenable_id' })
+  accessTokens!: HasMany<AccessToken>
 }
+

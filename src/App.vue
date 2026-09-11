@@ -18,11 +18,19 @@ const isCopied = ref(false)
 
 const tokenInfo = computed(() => {
   if (!token.value) return null
+  if (token.value.startsWith('oat_')) {
+    return {
+      type: 'OAT (Access Token)',
+      prefix: 'oat_',
+      secret: token.value.substring(4, 12) + '...',
+      isOat: true
+    }
+  }
   try {
     const parts = token.value.split('.')
     if (parts.length === 3) {
       const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')))
-      return payload
+      return { ...payload, type: 'JWT', isJwt: true }
     }
   } catch {
     return null
@@ -104,10 +112,28 @@ const clearOutput = () => {
   currentLog.value = null
 }
 
-// 清除 Token
-const clearToken = () => {
-  token.value = ''
-}
+// 登出與撤銷 Token (可選單一裝置或全部裝置)
+const logoutToken = (all = false) => runApi('logout', async () => {
+  if (!token.value) {
+    token.value = ''
+    return
+  }
+  const currentToken = token.value
+  try {
+    const res = await fetch(`/api/auth/logout${all ? '?all=true' : ''}`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${currentToken}`
+      }
+    })
+    const data = await res.json()
+    token.value = ''
+    logResult(`/api/auth/logout${all ? '?all=true' : ''}`, 'POST', res.status, data)
+  } catch (e) {
+    token.value = ''
+    logResult('/api/auth/logout', 'POST', 500, String(e), true)
+  }
+})
 
 // 複製 Token
 const copyToken = async () => {
@@ -340,15 +366,19 @@ const testRelation = () => runApi('relation', async () => {
             <span v-if="tokenInfo?.jti" class="token-jti-badge font-mono" title="RFC 7519 每次登入簽發之唯一 UUID">
               jti: {{ tokenInfo.jti.substring(0, 8) }}...
             </span>
+            <span v-else-if="tokenInfo?.isOat" class="token-jti-badge font-mono" title="AdonisJS 原生 Access Token (OAT)">
+              OAT: {{ tokenInfo.secret }}
+            </span>
           </div>
           <div v-if="token" class="token-actions">
             <button class="btn-chip" @click="copyToken" title="複製 Token">複製</button>
-            <button class="btn-chip btn-chip-danger" @click="clearToken" title="清除 Token">登出/清除</button>
+            <button class="btn-chip btn-chip-danger" @click="() => logoutToken(false)" title="呼叫後端 /api/auth/logout 撤銷當前 Token">登出本機</button>
+            <button class="btn-chip btn-chip-warning" @click="() => logoutToken(true)" title="登出並撤銷此帳號所有裝置 Token">全裝置登出</button>
           </div>
         </div>
         <div class="token-value-box">
           <span class="token-key font-mono">Bearer</span>
-          <code class="token-text font-mono" :title="token || '尚未登入'">{{ token ? `${token.substring(0, 18)}...${token.substring(token.length - 12)}` : '(執行註冊或登入以取得 JWT Token)' }}</code>
+          <code class="token-text font-mono" :title="token || '尚未登入'">{{ token ? `${token.substring(0, 18)}...${token.substring(token.length - 12)}` : '(執行註冊或登入以取得 Access Token)' }}</code>
         </div>
       </div>
     </header>
@@ -450,7 +480,20 @@ const testRelation = () => runApi('relation', async () => {
               <span class="btn-number font-mono">#04b</span>
             </div>
             <div class="btn-path font-mono">/api/users</div>
-            <div class="btn-desc">需 Bearer JWT，查詢所有使用者列表</div>
+            <div class="btn-desc">需 Bearer Token，查詢所有使用者列表</div>
+          </button>
+
+          <button
+            class="api-action-btn"
+            :class="{ loading: loadingAction === 'logout' }"
+            @click="() => logoutToken(false)"
+          >
+            <div class="btn-top">
+              <span class="badge-method post">POST</span>
+              <span class="btn-number font-mono">#04c</span>
+            </div>
+            <div class="btn-path font-mono">/api/auth/logout</div>
+            <div class="btn-desc">需 Bearer Token，註銷當前 Token 並自 DB 刪除</div>
           </button>
         </div>
       </section>
@@ -742,6 +785,16 @@ const testRelation = () => runApi('relation', async () => {
   font-weight: 500;
 }
 
+.token-sso-badge {
+  font-size: 0.7rem;
+  background: rgba(16, 185, 129, 0.15);
+  color: #6ee7b7;
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  padding: 1px 7px;
+  border-radius: 9999px;
+  font-weight: 500;
+}
+
 .token-dot {
   width: 7px;
   height: 7px;
@@ -778,6 +831,12 @@ const testRelation = () => runApi('relation', async () => {
 .btn-chip-danger:hover {
   color: var(--color-error);
   border-color: rgba(239, 68, 68, 0.4);
+}
+
+.btn-chip-warning:hover {
+  color: #f59e0b;
+  border-color: rgba(245, 158, 11, 0.4);
+  background: rgba(245, 158, 11, 0.1);
 }
 
 .token-value-box {

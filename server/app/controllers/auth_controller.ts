@@ -79,14 +79,17 @@ export default class AuthController extends BaseController {
   }
 
   async me({ auth }: HttpContext) {
-    // throw new AuthenticationException('尚未通過身分驗證或 Token 無效', 'E_UNAUTHORIZED')
-
-    // 實際從 SQLite 資料庫撈取最新使用者實體資料
-    // const user = await User.find(authUser.id)
-    // if (!user) {
-    //   throw new HttpException("資料庫中查無此使用者，可能已被移除", 404, "E_USER_NOT_FOUND")
-    // }
-
     return auth.user
   }
+
+  async logout(ctx: HttpContext) {
+    const qs = ctx.request.qs()
+    const all = qs.all === 'true' || qs.all === '1'
+    await ctx.auth.logout(all)
+
+    return {
+      message: all ? "已成功登出所有裝置並撤銷所有權杖" : "已成功登出並撤銷當前存取權杖",
+    }
+  }
 }
+

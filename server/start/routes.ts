@@ -31,8 +31,9 @@ router
       .group(() => {
         router.post("/register", [AuthController, "register"])
         router.post("/login", [AuthController, "login"])
-        // 支援具名中介層 middleware.auth('jwt') 或字串 'auth:jwt'
-        router.get("/me", [AuthController, "me"]).use([middleware.auth("jwt")])
+        router.post("/logout", [AuthController, "logout"]).use([middleware.auth("tokens")])
+        // 支援具名中介層 middleware.auth('tokens') 或字串 'auth:tokens'
+        router.get("/me", [AuthController, "me"]).use([middleware.auth("tokens")])
       })
       .prefix("/auth")
 
@@ -42,8 +43,8 @@ router
     // 4. Notes 資源路由 (/api/notes)
     router.resource("notes", NotesController)
 
-    // 4.1 使用者列表路由 (/api/users，需要 JWT Auth)
-    router.get("/users", [UsersController, "index"]).use([middleware.auth("jwt")])
+    // 4.1 使用者列表路由 (/api/users，需要 Access Token Auth)
+    router.get("/users", [UsersController, "index"]).use([middleware.auth("tokens")])
 
     // 5. Response Macro 測試路由 (/api/macro-test)
     router.get("/macro-test", (ctx) => {
