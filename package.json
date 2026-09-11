@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "concurrently -k -p \"[{name}]\" -n \"Vite,Worker\" -c \"cyan.bold,magenta.bold\" \"pnpm run dev:client\" \"pnpm run dev:server\"",
+    "dev:remote": "concurrently -k -p \"[{name}]\" -n \"Vite,Worker\" -c \"cyan.bold,magenta.bold\" \"pnpm run dev:client\" \"wrangler dev --remote\"",
     "dev:client": "vite",
     "dev:server": "wrangler dev",
     "build": "vue-tsc -b && vite build",

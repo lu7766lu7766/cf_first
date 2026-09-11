@@ -35,7 +35,8 @@ function printHelp() {
   \x1b[1mmigration:rollback\x1b[0m       回滾上一批次 (Batch) 的資料庫遷移
   \x1b[1mmigration:status\x1b[0m         查看所有遷移檔案的套用狀態與批次
   \x1b[1mmigration:fresh\x1b[0m          重置資料庫並重新執行所有遷移 (可加 --seed)
-  \x1b[1mdb:seed\x1b[0m                  執行資料庫種子腳本
+  \x1b[1mdb:seed\x1b[0m                  執行資料庫種子腳本 (可加 --remote)
+  \x1b[1mdb:pull\x1b[0m                  從線上 Cloudflare D1 拉取最新資料並同步至本機 SQLite
   \x1b[1mdb:path\x1b[0m                  查看本機 D1 SQLite 實體路徑與 tmp/db.sqlite 狀態
 `)
 }
@@ -107,28 +108,32 @@ function findLocalSqlitePath(): string | null {
   const d1Dir = path.join(__dirname, '../.wrangler/state/v3/d1')
   if (!fs.existsSync(d1Dir)) return null
 
-  function scan(dir: string): string | null {
+  const sqliteFiles: Array<{ path: string; mtime: number }> = []
+
+  function scan(dir: string): void {
     try {
       const entries = fs.readdirSync(dir, { withFileTypes: true })
       for (const entry of entries) {
         const fullPath = path.join(dir, entry.name)
         if (entry.isDirectory()) {
-          const found = scan(fullPath)
-          if (found) return found
+          scan(fullPath)
         } else if (
           entry.isFile() &&
           entry.name.endsWith('.sqlite') &&
           !entry.name.includes('-shm') &&
           !entry.name.includes('-wal')
         ) {
-          return fullPath
+          const stats = fs.statSync(fullPath)
+          sqliteFiles.push({ path: fullPath, mtime: stats.mtimeMs })
         }
       }
     } catch {}
-    return null
   }
 
-  return scan(d1Dir)
+  scan(d1Dir)
+  if (sqliteFiles.length === 0) return null
+  sqliteFiles.sort((a, b) => b.mtime - a.mtime)
+  return sqliteFiles[0].path
 }
 
 /**
@@ -138,22 +143,35 @@ function ensureDbSymlink(): { symlink: string; target: string } | null {
   const sqliteFile = findLocalSqlitePath()
   if (!sqliteFile) return null
 
-  const tmpDir = path.join(__dirname, '../tmp')
-  ensureDir(tmpDir)
-  const symlinkPath = path.join(tmpDir, 'db.sqlite')
-
+  // 強制執行 WAL Checkpoint，將所有暫存寫入主資料庫，防止第三方 GUI 工具讀取失敗
   try {
-    if (fs.existsSync(symlinkPath) || fs.lstatSync(symlinkPath).isSymbolicLink?.()) {
-      fs.unlinkSync(symlinkPath)
-    }
+    execSync(`sqlite3 "${sqliteFile}" "PRAGMA wal_checkpoint(TRUNCATE);"`, { stdio: 'pipe' })
   } catch {}
 
-  try {
-    fs.symlinkSync(sqliteFile, symlinkPath)
-    return { symlink: symlinkPath, target: sqliteFile }
-  } catch {
-    return null
+  const tmpDir = path.join(__dirname, '../tmp')
+  ensureDir(tmpDir)
+
+  const pairs = [
+    { target: sqliteFile, link: path.join(tmpDir, 'db.sqlite') },
+    { target: `${sqliteFile}-shm`, link: path.join(tmpDir, 'db.sqlite-shm') },
+    { target: `${sqliteFile}-wal`, link: path.join(tmpDir, 'db.sqlite-wal') }
+  ]
+
+  for (const pair of pairs) {
+    try {
+      if (fs.existsSync(pair.link) || fs.lstatSync(pair.link).isSymbolicLink?.()) {
+        fs.unlinkSync(pair.link)
+      }
+    } catch {}
+
+    if (fs.existsSync(pair.target)) {
+      try {
+        fs.symlinkSync(pair.target, pair.link)
+      } catch {}
+    }
   }
+
+  return { symlink: path.join(tmpDir, 'db.sqlite'), target: sqliteFile }
 }
 
 const isRemote = args.includes('--remote')
@@ -660,6 +678,46 @@ VALUES (1, '【種子筆記 1】探索 AdonisJS 7 開發體驗', '採用 Class C
         if (!isRemote) ensureDbSymlink()
       } catch (e) {
         console.error('❌ 種子執行失敗:', e)
+      }
+      break
+    }
+
+    case 'db:pull': {
+      console.log('📥 正在從 Cloudflare 線上 D1 (cf_first) 下載最新資料庫並同步至地端...')
+      const projectRoot = path.join(rootDir, '..')
+      const tmpDir = path.join(projectRoot, 'tmp')
+      ensureDir(tmpDir)
+      const exportFile = path.join(tmpDir, 'remote_backup.sql')
+
+      try {
+        console.log('   \x1b[36m▶ [EXPORT]\x1b[0m 匯出線上 D1 資料庫至 tmp/remote_backup.sql...')
+        execSync(`pnpm exec wrangler d1 export cf_first --remote --output="${exportFile}"`, {
+          cwd: projectRoot,
+          stdio: 'pipe'
+        })
+
+        console.log('   \x1b[36m▶ [CLEAN]\x1b[0m 重置本機舊資料表...')
+        const localFile = findLocalSqlitePath()
+        if (localFile && fs.existsSync(localFile)) {
+          try {
+            const shm = `${localFile}-shm`
+            const wal = `${localFile}-wal`
+            fs.unlinkSync(localFile)
+            if (fs.existsSync(shm)) fs.unlinkSync(shm)
+            if (fs.existsSync(wal)) fs.unlinkSync(wal)
+          } catch {}
+        }
+
+        console.log('   \x1b[36m▶ [IMPORT]\x1b[0m 匯入資料至本機 SQLite...')
+        execSync(`pnpm exec wrangler d1 execute DB --local --file="${exportFile}"`, {
+          cwd: projectRoot,
+          stdio: 'pipe'
+        })
+
+        ensureDbSymlink()
+        console.log('\x1b[32m✔ 線上資料庫已成功同步至本地 SQLite (tmp/db.sqlite)！\x1b[0m')
+      } catch (err) {
+        console.error('❌ 同步失敗:', err)
       }
       break
     }

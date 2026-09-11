@@ -114,6 +114,9 @@ pnpm ace migration:run --remote
 # 執行資料庫種子填充腳本 (加 --remote 可寫入線上 Cloudflare D1)
 pnpm ace db:seed
 pnpm ace db:seed --remote
+
+# 從線上 Cloudflare D1 拉取最新資料並同步至本機 SQLite (tmp/db.sqlite)
+pnpm ace db:pull
 ```
 
 ---
@@ -126,10 +129,14 @@ pnpm install
 ```
 
 ### 2. 啟動本機開發環境
-同時啟動前端 Vite (Port 5173) 與後端 Cloudflare Worker 模擬器 (Port 8787)：
-```bash
-pnpm run dev
-```
+* **標準本地模式（使用本機 SQLite，推薦）**：
+  ```bash
+  pnpm run dev
+  ```
+* **線上直連模式（本機前端/後端直連 Cloudflare 線上真實 D1）**：
+  ```bash
+  pnpm run dev:remote
+  ```
 開啟瀏覽器訪問 `http://localhost:5173`，打開 **DevTools (F12) -> Console**，點擊按鈕即可測試各項 API。
 
 ### 3. 執行後端全自動整合測試
