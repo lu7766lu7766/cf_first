@@ -1,4 +1,7 @@
 import app from './index'
+import { kernel } from './core/kernel'
+import { middleware } from './start/kernel'
+import ApiFormatMiddleware from './app/middleware/api_format_middleware'
 
 async function runTests() {
   console.log('🧪 開始執行 AdonisJS 7 API 功能自動化測試...\n')
@@ -244,6 +247,16 @@ async function runTests() {
       data.time.endsWith('ms'),
       '13. ApiFormatMiddleware 格式整合輸出 (code: [0], data, time)'
     )
+  }
+
+  // 14. HttpKernel Global & Named Middleware 驗證測試
+  {
+    const globals = kernel.getGlobalMiddlewares()
+    const hasApiFormat = globals.some((m) => m === ApiFormatMiddleware || (m as any).name === 'ApiFormatMiddleware')
+    assert(hasApiFormat, '14a. HttpKernel.global 全域中介層註冊與解析 (ApiFormatMiddleware)')
+
+    const namedAuthHandler = middleware.auth('jwt')
+    assert(typeof namedAuthHandler === 'function', '14b. HttpKernel.named 具名中介層工廠產生 (middleware.auth)')
   }
 
   console.log(`\n測試總結: ${passed} 通過, ${failed} 失敗`)

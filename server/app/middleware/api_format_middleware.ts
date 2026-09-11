@@ -2,6 +2,11 @@ import type { HttpContext, NextFn } from '../../core/types'
 
 export default class ApiFormatMiddleware {
   async handle(ctx: HttpContext, next: NextFn) {
+    if ((ctx as any).__apiFormatted) {
+      return await next()
+    }
+    ;(ctx as any).__apiFormatted = true
+
     const start: number = Date.now()
     try {
       await next()

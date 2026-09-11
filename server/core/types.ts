@@ -56,9 +56,11 @@ export type MiddlewareClass = new (...args: any[]) => {
 }
 
 export type MiddlewareHandler =
-  | ((ctx: HttpContext, next: NextFn) => Promise<Response | void> | Response | void)
+  | ((ctx: HttpContext, next: NextFn, ...args: any[]) => Promise<Response | void> | Response | void)
   | MiddlewareClass
-  | { handle(ctx: HttpContext, next: NextFn): Promise<Response | void> | Response | void }
+  | { handle(ctx: HttpContext, next: NextFn, ...args: any[]): Promise<Response | void> | Response | void }
+  | string
+  | (() => Promise<any>)
 
 export type ControllerConstructor<T = any> = new (...args: any[]) => T
 

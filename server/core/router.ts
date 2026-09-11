@@ -5,6 +5,7 @@ import { Container } from './container'
 import { AuthManager } from './auth'
 import { Database } from './database'
 import { HttpExceptionHandler } from './exception_handler'
+import { HttpKernel } from './kernel'
 
 export class Route {
   public middlewares: MiddlewareHandler[] = []
@@ -200,6 +201,13 @@ export class AdonisRouter {
   }
 
   /**
+   * 註冊具名中介層集合 (AdonisJS router.named 相容)
+   */
+  static named(map: Record<string, any>) {
+    return HttpKernel.named(map)
+  }
+
+  /**
    * 清除所有已註冊之路由 (供測試使用)
    */
   static clear(): void {
@@ -224,25 +232,18 @@ export class AdonisRouter {
 
           try {
             let actionResponse: Response | null = null
-            const allMiddlewares = [...AdonisRouter.globalMiddlewares, ...route.middlewares]
+            const allMiddlewares = [
+              ...AdonisRouter.globalMiddlewares,
+              ...HttpKernel.getGlobalMiddlewares(),
+              ...route.middlewares
+            ]
 
             // 執行中介層管線 (Middleware Pipeline)
             let middlewareIndex = 0
             const next = async (): Promise<void> => {
               if (middlewareIndex < allMiddlewares.length) {
                 const rawMiddleware = allMiddlewares[middlewareIndex++]
-                let res: any
-                if (typeof rawMiddleware === 'function') {
-                  if (rawMiddleware.prototype && typeof rawMiddleware.prototype.handle === 'function') {
-                    const instance: any = Container.make(rawMiddleware as any)
-                    res = await instance.handle(ctx, next)
-                  } else {
-                    res = await (rawMiddleware as any)(ctx, next)
-                  }
-                } else if (rawMiddleware && typeof (rawMiddleware as any).handle === 'function') {
-                  res = await (rawMiddleware as any).handle(ctx, next)
-                }
-
+                const res = await HttpKernel.execute(rawMiddleware, ctx, next)
                 if (res instanceof Response) {
                   actionResponse = res
                 }

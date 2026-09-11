@@ -1,11 +1,10 @@
 import { router } from '../core/router'
-import { auth } from '../app/middleware/auth_middleware'
 import { HttpException } from '../core/exception_handler'
 import AuthController from '../app/controllers/auth_controller'
 import NotesController from '../app/controllers/notes_controller'
-import ApiFormatMiddleware from '../app/middleware/api_format_middleware'
+import { middleware } from './kernel'
 
-// 所有 API 路由統一使用 router.group() 管理，設定 prefix('/api') 並統一套用 ApiFormatMiddleware
+// 所有 API 路由統一使用 router.group() 管理，全域中介層 (ApiFormatMiddleware) 已在 start/kernel.ts 註冊
 router
   .group(() => {
     // 1. 健康檢查路由 (/api/health)
@@ -23,7 +22,8 @@ router
       .group(() => {
         router.post('/register', [AuthController, 'register'])
         router.post('/login', [AuthController, 'login'])
-        router.get('/me', [AuthController, 'me']).use([auth('jwt')])
+        // 支援具名中介層 middleware.auth('jwt') 或字串 'auth:jwt'
+        router.get('/me', [AuthController, 'me']).use([middleware.auth('jwt')])
       })
       .prefix('/auth')
 
@@ -52,10 +52,9 @@ router
       return { body, qs, only, except }
     })
 
-    // 8. 格式整合測試路由 (/api/format-test)
+    // 8. 格式整合測試路由 (/api/format-test) - 示範具名中介層 middleware.apiFormat()
     router.get('/format-test', () => {
       return { message: '直接返回物件，由中介層格式化' }
-    })
+    }).use([middleware.apiFormat()])
   })
   .prefix('/api')
-  .use([ApiFormatMiddleware])

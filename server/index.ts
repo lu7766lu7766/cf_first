@@ -5,11 +5,11 @@ import { bootstrapKernel } from './start/kernel'
 import { corsConfig } from './config/cors'
 import type { Env } from './core/types'
 
-// 載入路由定義
-import './start/routes'
-
-// 1. 初始化 AdonisJS 7 內核 (註冊全域 Macro 巨集與 Exception Handler)
+// 1. 初始化 AdonisJS 7 內核 (註冊全域/具名 Middleware、Macro 與 Exception Handler)
 bootstrapKernel()
+
+// 2. 載入路由定義
+import './start/routes'
 
 // 2. 宣告 Hono 實例
 const app = new Hono<{ Bindings: Env }>()

@@ -39,6 +39,7 @@ cf_first/
     ├── ace.ts                   # Ace CLI 命令列入口點 (pnpm ace)
     ├── index.ts                 # Hono 伺服器主入口點
     ├── core/                    # AdonisJS 核心框架膠水層
+    │   ├── kernel.ts            # HttpKernel (全域與具名中介層管線註冊與解析)
     │   ├── router.ts            # AdonisRouter, Resource 與 Hono 橋接
     │   ├── container.ts         # IoC 容器與 @inject 裝飾器
     │   ├── context.ts           # HttpContext 建立 (request, response, auth)
@@ -57,7 +58,7 @@ cf_first/
     ├── app/                     # 業務邏輯層
     │   ├── controllers/         # AuthController, NotesController
     │   ├── models/              # User, Note
-    │   ├── middleware/          # auth_middleware
+    │   ├── middleware/          # auth_middleware, api_format_middleware
     │   ├── validators/          # RegisterValidator, CreateNoteValidator
     │   ├── exceptions/          # handler.ts (AppExceptionHandler)
     │   └── services/            # NotesService (示範 @inject 依賴注入)
@@ -65,7 +66,7 @@ cf_first/
     │   ├── migrations/          # SQL 結構遷移檔案
     │   └── seeders/             # main_seeder.ts 種子腳本
     └── start/                   # 啟動註冊
-        ├── kernel.ts            # Macro 註冊與全域設定
+        ├── kernel.ts            # HttpKernel 全域/具名中介層與 Macro 註冊
         └── routes.ts            # Adonis 風格路由定義
 ```
 
