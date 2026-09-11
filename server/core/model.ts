@@ -1,6 +1,7 @@
 import { Database, QueryBuilder } from './database'
 import { dateTime, DateTime } from './time'
 import { getModelRelations, RelationClient } from './relations'
+import { HttpException } from './exception_handler'
 
 export type ModelHookFn<T = any> = (model: T) => Promise<void> | void
 
@@ -75,25 +76,39 @@ export class BaseModel {
     return this.table || this.name.toLowerCase() + 's'
   }
 
-  static query<T extends typeof BaseModel>(this: T): QueryBuilder<InstanceType<T>> {
+  static query<T extends typeof BaseModel>(this: T): ModelQueryBuilder<T> {
     const tableName = (this as typeof BaseModel).getTableName()
-    return Database.from(tableName) as any
+    return new ModelQueryBuilder<T>(this, Database.from(tableName))
   }
 
   static async all<T extends typeof BaseModel>(this: T): Promise<Array<InstanceType<T>>> {
-    const rows = await this.query().all()
-    return rows.map((r: any) => new (this as any)(r) as InstanceType<T>)
+    return await (this as any).query().all()
   }
 
   static async find<T extends typeof BaseModel>(this: T, id: any): Promise<InstanceType<T> | null> {
     const key = (this as typeof BaseModel).primaryKey || 'id'
-    const row = await this.query().where(key, id).first()
-    return row ? (new (this as any)(row) as InstanceType<T>) : null
+    return await (this as any).query().where(key, id).first()
+  }
+
+  static async findOrFail<T extends typeof BaseModel>(this: T, id: any): Promise<InstanceType<T>> {
+    const key = (this as typeof BaseModel).primaryKey || 'id'
+    const instance = await (this as any).query().where(key, id).first()
+    if (!instance) {
+      throw new HttpException(`找不到 ID 為 ${id} 的 ${(this as any).name} 資料`, 404, 'E_ROW_NOT_FOUND')
+    }
+    return instance
   }
 
   static async findBy<T extends typeof BaseModel>(this: T, column: string, value: any): Promise<InstanceType<T> | null> {
-    const row = await this.query().where(column, value).first()
-    return row ? (new (this as any)(row) as InstanceType<T>) : null
+    return await (this as any).query().where(column, value).first()
+  }
+
+  static async findByOrFail<T extends typeof BaseModel>(this: T, column: string, value: any): Promise<InstanceType<T>> {
+    const instance = await (this as any).query().where(column, value).first()
+    if (!instance) {
+      throw new HttpException(`找不到 ${column} 為 ${value} 的 ${(this as any).name} 資料`, 404, 'E_ROW_NOT_FOUND')
+    }
+    return instance
   }
 
   static async create<T extends typeof BaseModel>(this: T, attributes: Record<string, any>): Promise<InstanceType<T>> {
@@ -195,75 +210,29 @@ export class BaseModel {
   }
 
   /**
-   * 懶載入關聯資料 (AdonisJS await model.load('notes'))
+   * 懶載入關聯資料 (AdonisJS await model.load('notes', (query) => ...))
    */
-  async load(relationName: string): Promise<this> {
+  async load(relationName: string, callback?: (query: any) => void): Promise<this> {
     const client = this.related(relationName)
-    const result = await client.get()
+    const result = await client.get(callback)
     ;(this as any)[relationName] = result
     return this
   }
 
   /**
    * 批次預載入關聯資料 (Eager Loading / Preload)
+   * @deprecated 建議改用 Model.query().preload(...) 或 model.load(...)
    */
   static async preload<T extends typeof BaseModel>(
     this: T,
     models: Array<InstanceType<T>>,
-    relationName: string
+    relationName: string,
+    callback?: (query: ModelQueryBuilder<any>) => void
   ): Promise<Array<InstanceType<T>>> {
     if (models.length === 0) return models
-    const relations = getModelRelations(this)
-    const meta = relations[relationName]
-    if (!meta) {
-      throw new Error(`Relation [${relationName}] is not defined on model [${this.name}].`)
-    }
-
-    const TargetModel = meta.modelLoader()
-    const primaryKey = (this as any).primaryKey || 'id'
-    const targetPrimaryKey = TargetModel.primaryKey || 'id'
-
-    switch (meta.type) {
-      case 'hasMany': {
-        const foreignKey = meta.foreignKey || `${this.name.replace(/Model$/i, '').toLowerCase()}_id`
-        const localIds = models.map((m: any) => m[primaryKey]).filter(Boolean)
-        const allChildren = await TargetModel.query().whereIn(foreignKey, localIds).all()
-        const childrenInstances = allChildren.map((c: any) => new TargetModel(c))
-
-        for (const model of models) {
-          const matched = childrenInstances.filter((c: any) => String(c[foreignKey]) === String((model as any)[primaryKey]))
-          ;(model as any)[relationName] = matched
-        }
-        break
-      }
-
-      case 'hasOne': {
-        const foreignKey = meta.foreignKey || `${this.name.replace(/Model$/i, '').toLowerCase()}_id`
-        const localIds = models.map((m: any) => m[primaryKey]).filter(Boolean)
-        const allChildren = await TargetModel.query().whereIn(foreignKey, localIds).all()
-        const childrenInstances = allChildren.map((c: any) => new TargetModel(c))
-
-        for (const model of models) {
-          const matched = childrenInstances.find((c: any) => String(c[foreignKey]) === String((model as any)[primaryKey]))
-          ;(model as any)[relationName] = matched || null
-        }
-        break
-      }
-
-      case 'belongsTo': {
-        const foreignKey = meta.foreignKey || `${TargetModel.name.replace(/Model$/i, '').toLowerCase()}_id`
-        const foreignIds = models.map((m: any) => m[foreignKey]).filter(Boolean)
-        const allParents = await TargetModel.query().whereIn(targetPrimaryKey, foreignIds).all()
-        const parentInstances = allParents.map((p: any) => new TargetModel(p))
-
-        for (const model of models) {
-          const matched = parentInstances.find((p: any) => String(p[targetPrimaryKey]) === String((model as any)[foreignKey]))
-          ;(model as any)[relationName] = matched || null
-        }
-        break
-      }
-    }
-
+    const qb = new ModelQueryBuilder(this, Database.from((this as any).getTableName()))
+    qb.preload(relationName, callback)
+    await qb.eagerLoad(models)
     return models
   }
 
@@ -305,5 +274,208 @@ export class BaseModel {
 
   static afterCreate(this: typeof BaseModel, fn: ModelHookFn) {
     this.hooks.afterCreate.push(fn)
+  }
+}
+
+export interface PreloadDefinition {
+  relation: string
+  callback?: (query: ModelQueryBuilder<any>) => void
+}
+
+/**
+ * AdonisJS / Lucid 風格之 Model 查詢構建器
+ * 支援 Thenable (直接 await)、.preload(...) 關聯預載入與 Model 實例自動封裝
+ */
+export class ModelQueryBuilder<T extends typeof BaseModel = typeof BaseModel> implements PromiseLike<Array<InstanceType<T>>> {
+  private preloads: PreloadDefinition[] = []
+
+  constructor(
+    public modelClass: T,
+    private dbQuery: QueryBuilder<any>
+  ) {}
+
+  select(...fields: string[]): this {
+    this.dbQuery.select(...fields)
+    return this
+  }
+
+  where(column: string, operatorOrValue: any, value?: any): this {
+    this.dbQuery.where(column, operatorOrValue, value)
+    return this
+  }
+
+  whereIn(column: string, values: any[]): this {
+    this.dbQuery.whereIn(column, values)
+    return this
+  }
+
+  orderBy(column: string, direction: 'asc' | 'desc' | 'ASC' | 'DESC' = 'ASC'): this {
+    this.dbQuery.orderBy(column, direction)
+    return this
+  }
+
+  limit(count: number): this {
+    this.dbQuery.limit(count)
+    return this
+  }
+
+  offset(count: number): this {
+    this.dbQuery.offset(count)
+    return this
+  }
+
+  /**
+   * 鏈式預載入關聯資料，支援可選的自訂查詢 callback
+   * 例如: .preload('user') 或 .preload('user', (q) => q.select('id', 'email'))
+   */
+  preload(relationName: string, callback?: (query: ModelQueryBuilder<any>) => void): this {
+    this.preloads.push({ relation: relationName, callback })
+    return this
+  }
+
+  /**
+   * 取得第一筆結果並封裝為 Model 實例，同時處理預載入
+   */
+  async first(): Promise<InstanceType<T> | null> {
+    const row = await this.dbQuery.first()
+    if (!row) return null
+
+    const instance = new (this.modelClass as any)(row) as InstanceType<T>
+    if (this.preloads.length > 0) {
+      await this.eagerLoad([instance])
+    }
+    return instance
+  }
+
+  /**
+   * 取得第一筆結果，若查無資料則拋出 404 HttpException (E_ROW_NOT_FOUND)
+   */
+  async firstOrFail(): Promise<InstanceType<T>> {
+    const instance = await this.first()
+    if (!instance) {
+      const modelName = (this.modelClass as any).name || 'Row'
+      throw new HttpException(`找不到符合條件的 ${modelName} 資料`, 404, 'E_ROW_NOT_FOUND')
+    }
+    return instance
+  }
+
+  /**
+   * 取得所有符合條件的 Model 實例，並批次加載所有指定的預載關聯
+   */
+  async all(): Promise<Array<InstanceType<T>>> {
+    const rows = await this.dbQuery.all()
+    const instances = rows.map((r: any) => new (this.modelClass as any)(r) as InstanceType<T>)
+
+    if (instances.length > 0 && this.preloads.length > 0) {
+      await this.eagerLoad(instances)
+    }
+
+    return instances
+  }
+
+  async exec(): Promise<Array<InstanceType<T>>> {
+    return this.all()
+  }
+
+  /**
+   * 實作 PromiseLike / Thenable，支援直接 await Note.query().preload('user')
+   */
+  then<TResult1 = Array<InstanceType<T>>, TResult2 = never>(
+    onfulfilled?: ((value: Array<InstanceType<T>>) => TResult1 | PromiseLike<TResult1>) | null,
+    onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null
+  ): Promise<TResult1 | TResult2> {
+    return this.all().then(onfulfilled, onrejected)
+  }
+
+  /**
+   * 批次預載入邏輯（Eager Loading 防止 N+1）
+   */
+  async eagerLoad(models: Array<InstanceType<T>>): Promise<void> {
+    if (models.length === 0) return
+
+    const relations = getModelRelations(this.modelClass)
+    const primaryKey = (this.modelClass as any).primaryKey || 'id'
+
+    for (const preloadDef of this.preloads) {
+      const relationName = preloadDef.relation
+      const meta = relations[relationName]
+      if (!meta) {
+        throw new Error(`Relation [${relationName}] is not defined on model [${(this.modelClass as any).name}].`)
+      }
+
+      const TargetModel = meta.modelLoader()
+      const targetPrimaryKey = TargetModel.primaryKey || 'id'
+
+      switch (meta.type) {
+        case 'belongsTo': {
+          const foreignKey = meta.foreignKey || `${TargetModel.name.replace(/Model$/i, '').toLowerCase()}_id`
+          const foreignIds = Array.from(new Set(models.map((m: any) => m[foreignKey]).filter((id: any) => id !== undefined && id !== null)))
+          if (foreignIds.length === 0) {
+            for (const model of models) {
+              ;(model as any)[relationName] = null
+            }
+            break
+          }
+
+          const targetQuery = TargetModel.query().whereIn(targetPrimaryKey, foreignIds)
+          if (preloadDef.callback) {
+            preloadDef.callback(targetQuery)
+          }
+
+          const parents = await targetQuery.all()
+          for (const model of models) {
+            const matched = parents.find((p: any) => String(p[targetPrimaryKey]) === String((model as any)[foreignKey]))
+            ;(model as any)[relationName] = matched || null
+          }
+          break
+        }
+
+        case 'hasMany': {
+          const foreignKey = meta.foreignKey || `${(this.modelClass as any).name.replace(/Model$/i, '').toLowerCase()}_id`
+          const localIds = Array.from(new Set(models.map((m: any) => m[primaryKey]).filter((id: any) => id !== undefined && id !== null)))
+          if (localIds.length === 0) {
+            for (const model of models) {
+              ;(model as any)[relationName] = []
+            }
+            break
+          }
+
+          const targetQuery = TargetModel.query().whereIn(foreignKey, localIds)
+          if (preloadDef.callback) {
+            preloadDef.callback(targetQuery)
+          }
+
+          const children = await targetQuery.all()
+          for (const model of models) {
+            const matched = children.filter((c: any) => String(c[foreignKey]) === String((model as any)[primaryKey]))
+            ;(model as any)[relationName] = matched
+          }
+          break
+        }
+
+        case 'hasOne': {
+          const foreignKey = meta.foreignKey || `${(this.modelClass as any).name.replace(/Model$/i, '').toLowerCase()}_id`
+          const localIds = Array.from(new Set(models.map((m: any) => m[primaryKey]).filter((id: any) => id !== undefined && id !== null)))
+          if (localIds.length === 0) {
+            for (const model of models) {
+              ;(model as any)[relationName] = null
+            }
+            break
+          }
+
+          const targetQuery = TargetModel.query().whereIn(foreignKey, localIds)
+          if (preloadDef.callback) {
+            preloadDef.callback(targetQuery)
+          }
+
+          const children = await targetQuery.all()
+          for (const model of models) {
+            const matched = children.find((c: any) => String(c[foreignKey]) === String((model as any)[primaryKey]))
+            ;(model as any)[relationName] = matched || null
+          }
+          break
+        }
+      }
+    }
   }
 }

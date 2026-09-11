@@ -6,6 +6,8 @@ import { env } from './start/env'
 import { dateTime, DateTime } from './core/time'
 import { appConfig } from './config/app'
 import { databaseConfig } from './config/database'
+import { Note } from './app/models/note'
+import { User } from './app/models/user'
 
 async function runTests() {
   console.log('🧪 開始執行 AdonisJS 7 API 功能自動化測試...\n')
@@ -378,6 +380,50 @@ async function runTests() {
       typeof data.data?.calculations?.inTokyo === 'string' &&
       typeof data.data?.calculations?.inNewYork === 'string',
       '18. Luxon 時間物件運算端點 GET /api/time-test (跨時區轉換與加減天數)'
+    )
+  }
+
+  // 19. Model.query().preload('user') Thenable 測試
+  {
+    const notes = await Note.query().preload('user')
+    const firstNote = notes[0]
+    assert(
+      Array.isArray(notes) &&
+      notes.length > 0 &&
+      firstNote instanceof Note &&
+      firstNote.user instanceof User &&
+      typeof firstNote.user?.email === 'string',
+      '19. Note.query().preload("user") 直接 await (Thenable) 批次預載入且封裝為 Model 實例'
+    )
+  }
+
+  // 20. Model.query().preload('user', callback) 子查詢篩選測試
+  {
+    const notes = await Note.query().preload('user', (query) => {
+      query.select('id', 'email')
+    })
+    const firstNote = notes[0]
+    assert(
+      Array.isArray(notes) &&
+      notes.length > 0 &&
+      firstNote.user instanceof User &&
+      firstNote.user.id !== undefined &&
+      firstNote.user.email !== undefined,
+      '20. Note.query().preload("user", callback) 支援 Query Callback 欄位挑選'
+    )
+  }
+
+  // 21. model.load('user') Lazy Loading 測試
+  {
+    const note = await Note.find(1)
+    if (note) {
+      await note.load('user')
+    }
+    assert(
+      note instanceof Note &&
+      note.user instanceof User &&
+      typeof note.user?.email === 'string',
+      '21. note.load("user") Model 實體 Lazy Loading 關聯載入'
     )
   }
 

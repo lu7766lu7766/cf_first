@@ -5,9 +5,7 @@ import { Database } from "../../core/database"
 @inject()
 export class NotesService {
   async getAllNotes(): Promise<Note[]> {
-    const notes = await Note.all()
-    await Note.preload(notes, "user")
-    return notes
+    return await Note.query().preload("user")
   }
 
   async findNoteById(id: number | string): Promise<Note | null> {

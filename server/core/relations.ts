@@ -156,8 +156,11 @@ export class RelationClient<T = any> {
     }
   }
 
-  async get(): Promise<any> {
+  async get(callback?: (query: QueryBuilder<T>) => void): Promise<any> {
     const q = this.query()
+    if (callback) {
+      callback(q)
+    }
     if (this.meta.type === 'hasOne' || this.meta.type === 'belongsTo') {
       const row = await q.first()
       return row ? new (this.meta.modelLoader())(row) : null
