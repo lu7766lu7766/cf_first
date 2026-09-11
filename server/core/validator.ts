@@ -31,6 +31,11 @@ const VALIDATOR_FIELDS_KEY = Symbol.for('adonis:validator_fields')
 
 export function getValidatorFields(validatorClass: any): Record<string, FieldRuleOptions> {
   if (!validatorClass) return {}
+  if (!validatorClass[VALIDATOR_FIELDS_KEY]) {
+    try {
+      new validatorClass()
+    } catch {}
+  }
   return validatorClass[VALIDATOR_FIELDS_KEY] || {}
 }
 

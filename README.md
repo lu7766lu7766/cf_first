@@ -98,6 +98,15 @@ pnpm ace make:migration create_products_table
 # 建立新 Seeder 種子腳本
 pnpm ace make:seeder Product
 
+# 產出安全隨機 APP_KEY 並同步寫入 .env 與 .dev.vars (可加 --show 僅顯示不寫入)
+pnpm ace generate:key
+
+# 產出安全隨機 JWT_SECRET 並同步寫入 .env 與 .dev.vars
+pnpm ace generate:jwt-secret
+
+# 一次產出 APP_KEY 與 JWT_SECRET (或使用 pnpm ace generate:key --jwt)
+pnpm ace generate:secrets
+
 # 掃描並執行資料庫遷移
 pnpm ace migration:run
 

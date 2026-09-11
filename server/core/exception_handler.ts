@@ -36,10 +36,10 @@ export class HttpExceptionHandler {
    * 將例外轉換為 HTTP Response
    */
   async handle(error: unknown, ctx: HttpContext): Promise<Response> {
-    if (error instanceof ValidationException) {
+    if (error instanceof ValidationException || (error as any)?.name === 'ValidationException' || (error as any)?.code === 'E_VALIDATION_ERROR') {
       return ctx.response.status(422).json({
-        errors: error.errors,
-        code: error.code
+        errors: (error as any).errors || (error as any).details,
+        code: (error as any).code || 'E_VALIDATION_ERROR'
       })
     }
 

@@ -17,8 +17,10 @@ export default class ApiFormatMiddleware {
         time: Date.now() - start + ' ms',
       })
     } catch (error: any) {
+      const anyErr = error as any
+      const validationErrors = anyErr.errors || (anyErr.code === 'E_VALIDATION_ERROR' ? anyErr.details : undefined)
       const errorPayload = error instanceof Error
-        ? { ...error, message: error.message }
+        ? { ...error, message: error.message, ...(validationErrors ? { errors: validationErrors } : {}) }
         : { ...(error as Record<string, any>) }
 
       return ctx.response.status(200).json({

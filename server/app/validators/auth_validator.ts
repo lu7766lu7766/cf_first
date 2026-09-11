@@ -6,7 +6,7 @@ import { BaseValidator, field } from '../../core/validator'
  */
 export class RegisterValidator extends BaseValidator {
   @field({
-    required: '請輸入使用者帳號',
+    optional: true,
     minLength: [3, '帳號長度至少需 3 個字元'],
     maxLength: [20, '帳號長度不可超過 20 個字元'],
     // 自定義驗證規則 (custom)：例如禁止使用保留名稱
@@ -17,7 +17,7 @@ export class RegisterValidator extends BaseValidator {
       return true
     }
   })
-  username!: string
+  username?: string
 
   @field({
     optional: true,
@@ -45,10 +45,10 @@ export class RegisterValidator extends BaseValidator {
  */
 export class LoginValidator extends BaseValidator {
   @field({
-    required: '請輸入帳號',
+    optional: true,
     minLength: [3, '帳號長度至少需 3 個字元']
   })
-  username!: string
+  username?: string
 
   @field({
     optional: true,

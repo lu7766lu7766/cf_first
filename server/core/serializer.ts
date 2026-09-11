@@ -7,7 +7,7 @@ import { DateTime } from 'luxon'
  * - 支援遞迴解析巢狀物件與陣列
  * - 使用 WeakSet 防止循環參照
  */
-export function serializeToJson(value: any, seen: WeakSet<object> = new WeakSet()): any {
+export function serializeToJson(value: any, seen: Set<object> = new Set()): any {
   if (value === null || value === undefined) {
     return value
   }
@@ -22,31 +22,34 @@ export function serializeToJson(value: any, seen: WeakSet<object> = new WeakSet(
     return value
   }
 
-  // 如果物件已經被拜訪過，防止循環參照
+  // 如果物件正在當前調用鏈路徑中，防止循環參照
   if (seen.has(value)) {
     return undefined
   }
 
   // 判斷是否具備 toJSON 方法（例如 BaseModel）
   if (typeof (value as any).toJSON === 'function') {
-    seen.add(value)
+    const nextSeen = new Set(seen)
+    nextSeen.add(value)
     const jsonResult = (value as any).toJSON()
-    return serializeToJson(jsonResult, seen)
+    return serializeToJson(jsonResult, nextSeen)
   }
 
   // 陣列處理
   if (Array.isArray(value)) {
-    seen.add(value)
-    return value.map((item) => serializeToJson(item, seen))
+    const nextSeen = new Set(seen)
+    nextSeen.add(value)
+    return value.map((item) => serializeToJson(item, nextSeen))
   }
 
   // 普通物件處理
-  seen.add(value)
+  const nextSeen = new Set(seen)
+  nextSeen.add(value)
   const result: Record<string, any> = {}
   for (const [key, val] of Object.entries(value)) {
     // 忽略函式或 symbol 屬性
     if (typeof val !== 'function') {
-      result[key] = serializeToJson(val, seen)
+      result[key] = serializeToJson(val, nextSeen)
     }
   }
 

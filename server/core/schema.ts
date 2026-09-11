@@ -26,13 +26,24 @@ export abstract class BaseSchema {
   abstract down(): Promise<void> | void
 
   /**
-   * 編譯 up() 所產生的所有 SQL DDL 語句陣列
+   * 編譯 up() 所產生的所有 SQL DDL 語句陣列，並為 SQLite 自動補充 IF NOT EXISTS 防呆相容
    */
   async compileUp(): Promise<string[]> {
     this.schema = this.knexInstance.schema
     await this.up()
     const queries = this.schema.toSQL()
-    return queries.map((q) => q.sql)
+    return queries.map((q) => {
+      let sql = q.sql.trim()
+      // 為 SQLite 唯一索引加上 IF NOT EXISTS
+      if (/^create\s+unique\s+index\s+(?!if\s+not\s+exists)/i.test(sql)) {
+        sql = sql.replace(/^create\s+unique\s+index\s+/i, 'CREATE UNIQUE INDEX IF NOT EXISTS ')
+      } else if (/^create\s+index\s+(?!if\s+not\s+exists)/i.test(sql)) {
+        sql = sql.replace(/^create\s+index\s+/i, 'CREATE INDEX IF NOT EXISTS ')
+      } else if (/^create\s+table\s+(?!if\s+not\s+exists)/i.test(sql)) {
+        sql = sql.replace(/^create\s+table\s+/i, 'CREATE TABLE IF NOT EXISTS ')
+      }
+      return sql
+    })
   }
 
   /**
@@ -42,6 +53,12 @@ export abstract class BaseSchema {
     this.schema = this.knexInstance.schema
     await this.down()
     const queries = this.schema.toSQL()
-    return queries.map((q) => q.sql)
+    return queries.map((q) => {
+      let sql = q.sql.trim()
+      if (/^drop\s+table\s+(?!if\s+exists)/i.test(sql)) {
+        sql = sql.replace(/^drop\s+table\s+/i, 'DROP TABLE IF EXISTS ')
+      }
+      return sql
+    })
   }
 }
