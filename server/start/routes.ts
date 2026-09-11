@@ -52,9 +52,10 @@ router
       return { body, qs, only, except }
     })
 
-    // 8. 格式整合測試路由 (/api/format-test) - 示範具名中介層 middleware.apiFormat()
+    // 8. 格式整合測試路由 (/api/format-test)
     router.get('/format-test', () => {
       return { message: '直接返回物件，由中介層格式化' }
-    }).use([middleware.apiFormat()])
+    })
   })
   .prefix('/api')
+  .use([middleware.apiFormat()])

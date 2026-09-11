@@ -2,7 +2,7 @@ import { BaseController } from '../../core/controller'
 import type { HttpContext } from '../../core/types'
 import { RegisterValidator, LoginValidator } from '../validators/auth_validator'
 import { User } from '../models/user'
-import { AuthenticationException } from '../../core/exception_handler'
+import { AuthenticationException, HttpException } from '../../core/exception_handler'
 
 export default class AuthController extends BaseController {
   async register(ctx: HttpContext) {
@@ -11,10 +11,7 @@ export default class AuthController extends BaseController {
     // 檢查 Email 是否已存在
     const existing = await User.findBy('email', payload.email)
     if (existing) {
-      return ctx.response.status(400).json({
-        message: '此 Email 已經註冊過',
-        code: 'E_EMAIL_TAKEN'
-      })
+      throw new HttpException('此 Email 已經註冊過', 400, 'E_EMAIL_TAKEN')
     }
 
     const user = await User.create({
@@ -25,11 +22,12 @@ export default class AuthController extends BaseController {
 
     const token = await ctx.auth.login(user)
 
-    return ctx.response.status(201).json({
+    // 直接返回物件，由 ApiFormatMiddleware 統一格式化
+    return {
       message: '會員註冊成功',
       user: user.toJSON(),
       token
-    })
+    }
   }
 
   async login(ctx: HttpContext) {
@@ -42,17 +40,20 @@ export default class AuthController extends BaseController {
 
     const token = await ctx.auth.login(user)
 
-    return ctx.response.json({
+    // 直接返回登入成功資訊
+    return {
       message: '登入成功',
       user: user.toJSON(),
       token
-    })
+    }
   }
 
   async me(ctx: HttpContext) {
-    return ctx.response.json({
+    // 直接返回認證使用者資訊
+    return {
       message: '成功通過 Auth Guard 身分驗證',
       user: ctx.auth.user
-    })
+    }
   }
 }
+

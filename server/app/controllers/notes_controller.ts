@@ -3,7 +3,6 @@ import { inject } from '../../core/container'
 import type { HttpContext } from '../../core/types'
 import { NotesService } from '../services/notes_service'
 import { CreateNoteValidator, UpdateNoteValidator } from '../validators/note_validator'
-import { Note } from '../models/note'
 import { HttpException } from '../../core/exception_handler'
 
 @inject()
@@ -15,13 +14,14 @@ export default class NotesController extends BaseController {
     this.notesService = notesService || new NotesService()
   }
 
-  async index(ctx: HttpContext) {
+  async index() {
     const notes = await this.notesService.getAllNotes()
-    return ctx.response.json({
+    // 直接返回資料物件
+    return {
       success: true,
       total: notes.length,
-      data: notes.map((n) => n.toJSON())
-    })
+      data: notes.map((n: any) => n.toJSON())
+    }
   }
 
   async store(ctx: HttpContext) {
@@ -30,10 +30,11 @@ export default class NotesController extends BaseController {
 
     const note = await this.notesService.createNote(payload)
 
-    return ctx.response.status(201).json({
+    // 直接返回新增筆記資料
+    return {
       message: '筆記建立成功 (透過 Model Active Record)',
       data: note.toJSON()
-    })
+    }
   }
 
   async show(ctx: HttpContext) {
@@ -42,7 +43,11 @@ export default class NotesController extends BaseController {
     if (!note) {
       throw new HttpException(`找不到 ID 為 ${id} 的筆記`, 404, 'E_ROW_NOT_FOUND')
     }
-    return ctx.response.json({ success: true, data: note.toJSON() })
+    // 直接返回查詢結果
+    return {
+      success: true,
+      data: note.toJSON()
+    }
   }
 
   async update(ctx: HttpContext) {
@@ -56,10 +61,11 @@ export default class NotesController extends BaseController {
     Object.assign(note, payload)
     await note.save()
 
-    return ctx.response.json({
+    // 直接返回更新結果
+    return {
       message: '筆記更新成功',
       data: note.toJSON()
-    })
+    }
   }
 
   async destroy(ctx: HttpContext) {
@@ -70,11 +76,15 @@ export default class NotesController extends BaseController {
     }
 
     await note.delete()
-    return ctx.response.json({ message: '筆記已成功刪除' })
+    // 直接返回刪除訊息
+    return {
+      message: '筆記已成功刪除'
+    }
   }
 
-  async transactionTest(ctx: HttpContext) {
-    const result = await this.notesService.runTransactionDemo()
-    return ctx.response.json(result)
+  async transactionTest() {
+    // 直接返回事務執行結果
+    return await this.notesService.runTransactionDemo()
   }
 }
+
