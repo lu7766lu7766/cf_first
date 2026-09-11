@@ -1,4 +1,5 @@
 import type { Context } from 'hono'
+import type { BaseController } from './controller'
 
 export interface Env {
   DB?: D1Database
@@ -64,4 +65,31 @@ export type MiddlewareHandler =
 
 export type ControllerConstructor<T = any> = new (...args: any[]) => T
 
-export type RouteAction = [ControllerConstructor, string] | ((ctx: HttpContext) => Promise<any> | any)
+export type RouteHandlerFn = (ctx: HttpContext) => Promise<any> | any
+
+/**
+ * 取得 Controller 實例中所有可供路由呼叫的方法名稱 (排除 BaseController 的內部輔助方法如 validate)
+ */
+export type ControllerActionKeys<T> = {
+  [K in keyof T]: T[K] extends (...args: any[]) => any
+    ? K extends keyof BaseController
+      ? never
+      : K extends string
+        ? K
+        : never
+    : never
+}[keyof T]
+
+/**
+ * 取得 Controller Class (Constructor) 所擁有的所有方法名稱
+ */
+export type ControllerMethods<C extends ControllerConstructor> = ControllerActionKeys<InstanceType<C>>
+
+
+/**
+ * 路由動作：支援 [Controller, "method"] 強型別提示與檢查，或閉包 (ctx) => any
+ */
+export type RouteAction<T extends ControllerConstructor = any> =
+  | [T, ControllerActionKeys<InstanceType<T>>]
+  | RouteHandlerFn
+

@@ -18,7 +18,7 @@ export default class ApiFormatMiddleware {
       })
     } catch (error: any) {
       const errorPayload = error instanceof Error
-        ? { message: error.message, ...error }
+        ? { ...error, message: error.message }
         : { ...(error as Record<string, any>) }
 
       return ctx.response.status(200).json({

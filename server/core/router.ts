@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import type { HttpContext, RouteAction, MiddlewareHandler, Env, ControllerConstructor } from './types'
+import type { HttpContext, RouteAction, RouteHandlerFn, ControllerMethods, MiddlewareHandler, Env, ControllerConstructor } from './types'
 import { createHttpContext } from './context'
 import { Container } from './container'
 import { AuthManager } from './auth'
@@ -45,10 +45,10 @@ export class RouteGroup {
   private groupPrefix = ''
   private groupMiddlewares: MiddlewareHandler[] = []
 
-  constructor(callback?: () => void) {
+  constructor(callback?: (group: RouteGroup) => void) {
     if (callback) {
       AdonisRouter.pushGroup(this)
-      callback()
+      callback(this)
       AdonisRouter.popGroup()
     }
   }
@@ -70,6 +70,55 @@ export class RouteGroup {
       this.groupMiddlewares.push(middlewares)
     }
     return this
+  }
+
+  get<T extends ControllerConstructor>(path: string, action: [T, NoInfer<ControllerMethods<T>>]): Route
+  get(path: string, action: RouteHandlerFn): Route
+  get(path: string, action: any): Route {
+    const route = new Route('GET', path, action)
+    this.add(route)
+    return route
+  }
+
+  post<T extends ControllerConstructor>(path: string, action: [T, NoInfer<ControllerMethods<T>>]): Route
+  post(path: string, action: RouteHandlerFn): Route
+  post(path: string, action: any): Route {
+    const route = new Route('POST', path, action)
+    this.add(route)
+    return route
+  }
+
+  put<T extends ControllerConstructor>(path: string, action: [T, NoInfer<ControllerMethods<T>>]): Route
+  put(path: string, action: RouteHandlerFn): Route
+  put(path: string, action: any): Route {
+    const route = new Route('PUT', path, action)
+    this.add(route)
+    return route
+  }
+
+  patch<T extends ControllerConstructor>(path: string, action: [T, NoInfer<ControllerMethods<T>>]): Route
+  patch(path: string, action: RouteHandlerFn): Route
+  patch(path: string, action: any): Route {
+    const route = new Route('PATCH', path, action)
+    this.add(route)
+    return route
+  }
+
+  delete<T extends ControllerConstructor>(path: string, action: [T, NoInfer<ControllerMethods<T>>]): Route
+  delete(path: string, action: RouteHandlerFn): Route
+  delete(path: string, action: any): Route {
+    const route = new Route('DELETE', path, action)
+    this.add(route)
+    return route
+  }
+
+  resource(name: string, controller: ControllerConstructor): void {
+    const cleanName = name.replace(/^\//, '')
+    this.get(`/${cleanName}`, [controller, 'index'] as any)
+    this.post(`/${cleanName}`, [controller, 'store'] as any)
+    this.get(`/${cleanName}/:id`, [controller, 'show'] as any)
+    this.put(`/${cleanName}/:id`, [controller, 'update'] as any)
+    this.delete(`/${cleanName}/:id`, [controller, 'destroy'] as any)
   }
 
   /**
@@ -125,43 +174,54 @@ export class AdonisRouter {
     return route
   }
 
-  static get(path: string, action: RouteAction): Route {
+  static get<T extends ControllerConstructor>(path: string, action: [T, NoInfer<ControllerMethods<T>>]): Route
+  static get(path: string, action: RouteHandlerFn): Route
+  static get(path: string, action: any): Route {
     return this.addRoute('GET', path, action)
   }
 
-  static post(path: string, action: RouteAction): Route {
+  static post<T extends ControllerConstructor>(path: string, action: [T, NoInfer<ControllerMethods<T>>]): Route
+  static post(path: string, action: RouteHandlerFn): Route
+  static post(path: string, action: any): Route {
     return this.addRoute('POST', path, action)
   }
 
-  static put(path: string, action: RouteAction): Route {
+  static put<T extends ControllerConstructor>(path: string, action: [T, NoInfer<ControllerMethods<T>>]): Route
+  static put(path: string, action: RouteHandlerFn): Route
+  static put(path: string, action: any): Route {
     return this.addRoute('PUT', path, action)
   }
 
-  static patch(path: string, action: RouteAction): Route {
+  static patch<T extends ControllerConstructor>(path: string, action: [T, NoInfer<ControllerMethods<T>>]): Route
+  static patch(path: string, action: RouteHandlerFn): Route
+  static patch(path: string, action: any): Route {
     return this.addRoute('PATCH', path, action)
   }
 
-  static delete(path: string, action: RouteAction): Route {
+  static delete<T extends ControllerConstructor>(path: string, action: [T, NoInfer<ControllerMethods<T>>]): Route
+  static delete(path: string, action: RouteHandlerFn): Route
+  static delete(path: string, action: any): Route {
     return this.addRoute('DELETE', path, action)
   }
+
 
   /**
    * AdonisJS 經典 resource 路由自動註冊
    */
   static resource(name: string, controller: ControllerConstructor): void {
     const cleanName = name.replace(/^\//, '')
-    this.get(`/${cleanName}`, [controller, 'index'])
-    this.post(`/${cleanName}`, [controller, 'store'])
-    this.get(`/${cleanName}/:id`, [controller, 'show'])
-    this.put(`/${cleanName}/:id`, [controller, 'update'])
-    this.delete(`/${cleanName}/:id`, [controller, 'destroy'])
+    this.get(`/${cleanName}`, [controller, 'index'] as any)
+    this.post(`/${cleanName}`, [controller, 'store'] as any)
+    this.get(`/${cleanName}/:id`, [controller, 'show'] as any)
+    this.put(`/${cleanName}/:id`, [controller, 'update'] as any)
+    this.delete(`/${cleanName}/:id`, [controller, 'destroy'] as any)
   }
 
   /**
    * 路由群組 (Route Group)
    * 支援 .prefix('/api') 與 .use([middleware]) 鏈式呼叫，以及巢狀群組
    */
-  static group(callback: () => void): RouteGroup {
+  static group(callback: (group: RouteGroup) => void): RouteGroup {
     const group = new RouteGroup()
     if (this.groupStack.length > 0) {
       this.groupStack[this.groupStack.length - 1].add(group)
@@ -169,7 +229,7 @@ export class AdonisRouter {
       this.registeredNodes.push(group)
     }
     this.pushGroup(group)
-    callback()
+    callback(group)
     this.popGroup()
     return group
   }
