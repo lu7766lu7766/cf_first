@@ -1,6 +1,12 @@
 import type { Env } from './types'
 import { dateTime } from './time'
 
+export type IsolationLevels = 'read uncommitted' | 'read committed' | 'repeatable read' | 'serializable'
+
+export interface TransactionOptions {
+  isolationLevel?: IsolationLevels
+}
+
 export interface QueryOptions {
   table: string
   fields?: string[]
@@ -8,6 +14,8 @@ export interface QueryOptions {
   orders?: Array<{ column: string; direction: 'ASC' | 'DESC' }>
   limitCount?: number
   offsetCount?: number
+  lockMode?: 'forUpdate' | 'forShare'
+  lockTables?: string[]
 }
 
 // 模擬記憶體資料庫儲存庫（當本機或展示模式下未綁定真實 D1 時自動兜底，保證永遠可用）
@@ -68,6 +76,81 @@ export class QueryBuilder<T = any> {
     return this
   }
 
+  /**
+   * 悲觀鎖排他查詢 (AdonisJS Lucid query.forUpdate(...tableNames))
+   */
+  forUpdate(...tableNames: string[]): this {
+    this.options.lockMode = 'forUpdate'
+    this.options.lockTables = tableNames
+    return this
+  }
+
+  /**
+   * 悲觀鎖共享查詢 (AdonisJS Lucid query.forShare(...tableNames))
+   */
+  forShare(...tableNames: string[]): this {
+    this.options.lockMode = 'forShare'
+    this.options.lockTables = tableNames
+    return this
+  }
+
+  getLockMode(): 'forUpdate' | 'forShare' | undefined {
+    return this.options.lockMode
+  }
+
+  getLockTables(): string[] | undefined {
+    return this.options.lockTables
+  }
+
+  /**
+   * 編譯當前查詢為 SQL 字串與參數綁定陣列 (AdonisJS Lucid query.toSQL())
+   * 方言自動適配：MySQL / PostgreSQL 自動加上 FOR UPDATE / FOR SHARE，
+   * 而 SQLite / Cloudflare D1 與記憶體模式安全省略避免語法錯誤。
+   */
+  toSQL(): { sql: string; bindings: any[] } {
+    let sql = `SELECT ${this.options.fields!.join(', ')} FROM ${this.options.table}`
+    const bindings: any[] = []
+
+    if (this.options.wheres && this.options.wheres.length > 0) {
+      const conditions = this.options.wheres.map((w) => {
+        if (w.operator === 'IN') {
+          const list = Array.isArray(w.value) ? w.value : [w.value]
+          if (list.length === 0) return '1 = 0'
+          bindings.push(...list)
+          return `${w.column} IN (${list.map(() => '?').join(', ')})`
+        }
+        bindings.push(w.value)
+        return `${w.column} ${w.operator} ?`
+      })
+      sql += ` WHERE ${conditions.join(' AND ')}`
+    }
+
+    if (this.options.orders && this.options.orders.length > 0) {
+      const orderClauses = this.options.orders.map((o) => `${o.column} ${o.direction}`)
+      sql += ` ORDER BY ${orderClauses.join(', ')}`
+    }
+
+    if (this.options.limitCount !== undefined) {
+      sql += ` LIMIT ${this.options.limitCount}`
+    }
+    if (this.options.offsetCount !== undefined) {
+      sql += ` OFFSET ${this.options.offsetCount}`
+    }
+
+    const conn = Database.getConnectionName()
+    const env = this.getEnv()
+    const isSqliteOrD1 = conn === 'd1' || conn === 'sqlite' || (!conn && !!env?.DB)
+    if (!isSqliteOrD1 && this.options.lockMode) {
+      const lockSql = this.options.lockMode === 'forUpdate' ? 'FOR UPDATE' : 'FOR SHARE'
+      const tablesSql = this.options.lockTables && this.options.lockTables.length > 0
+        ? ` OF ${this.options.lockTables.join(', ')}`
+        : ''
+      sql += ` ${lockSql}${tablesSql}`
+    }
+
+    return { sql, bindings }
+  }
+
   async first(): Promise<T | null> {
     const list = await this.limit(1).all()
     return list[0] || null
@@ -77,35 +160,7 @@ export class QueryBuilder<T = any> {
     const env = this.getEnv()
     if (env?.DB) {
       try {
-        let sql = `SELECT ${this.options.fields!.join(', ')} FROM ${this.options.table}`
-        const bindings: any[] = []
-
-        if (this.options.wheres && this.options.wheres.length > 0) {
-          const conditions = this.options.wheres.map((w) => {
-            if (w.operator === 'IN') {
-              const list = Array.isArray(w.value) ? w.value : [w.value]
-              if (list.length === 0) return '1 = 0'
-              bindings.push(...list)
-              return `${w.column} IN (${list.map(() => '?').join(', ')})`
-            }
-            bindings.push(w.value)
-            return `${w.column} ${w.operator} ?`
-          })
-          sql += ` WHERE ${conditions.join(' AND ')}`
-        }
-
-        if (this.options.orders && this.options.orders.length > 0) {
-          const orderClauses = this.options.orders.map((o) => `${o.column} ${o.direction}`)
-          sql += ` ORDER BY ${orderClauses.join(', ')}`
-        }
-
-        if (this.options.limitCount !== undefined) {
-          sql += ` LIMIT ${this.options.limitCount}`
-        }
-        if (this.options.offsetCount !== undefined) {
-          sql += ` OFFSET ${this.options.offsetCount}`
-        }
-
+        const { sql, bindings } = this.toSQL()
         const stmt = env.DB.prepare(sql)
         const { results } = await stmt.bind(...bindings).all<T>()
         return (results as T[]) || []
@@ -255,6 +310,49 @@ export class QueryBuilder<T = any> {
   }
 }
 
+export class TransactionClient {
+  public isCompleted = false
+  public isRolledBack = false
+
+  constructor(
+    public readonly isolationLevel: IsolationLevels = 'serializable',
+    private getEnv: () => Env | undefined,
+    private snapshot: Map<string, string>,
+    private connectionName: string = 'd1'
+  ) {}
+
+  getConnectionName(): string {
+    return this.connectionName
+  }
+
+  from<T = any>(table: string): QueryBuilder<T> {
+    return new QueryBuilder<T>(table, this.getEnv, true)
+  }
+
+  async rawQuery<T = any>(sql: string, bindings: any[] = []): Promise<T[]> {
+    const env = this.getEnv()
+    if (env?.DB) {
+      const { results } = await env.DB.prepare(sql).bind(...bindings).all<T>()
+      return (results as T[]) || []
+    }
+    return []
+  }
+
+  async commit(): Promise<void> {
+    if (this.isCompleted) return
+    this.isCompleted = true
+  }
+
+  async rollback(): Promise<void> {
+    if (this.isCompleted) return
+    this.isCompleted = true
+    this.isRolledBack = true
+    for (const [table, json] of this.snapshot.entries()) {
+      memoryDb.set(table, JSON.parse(json))
+    }
+  }
+}
+
 export class Database {
   private static currentEnv?: Env
   private static connectionName = 'd1'
@@ -275,6 +373,10 @@ export class Database {
     return this
   }
 
+  static getConnectionName(): string {
+    return this.connectionName
+  }
+
   static from<T = any>(table: string): QueryBuilder<T> {
     return new QueryBuilder<T>(table, () => this.currentEnv)
   }
@@ -289,21 +391,40 @@ export class Database {
 
   /**
    * 事務支援 (AdonisJS Database.transaction)
+   * 支援 isolationLevel 隔離等級設定 ('read uncommitted' | 'read committed' | 'repeatable read' | 'serializable')
    */
-  static async transaction<T>(callback: (trx: typeof Database) => Promise<T>): Promise<T> {
+  static async transaction<T>(
+    callback: (trx: TransactionClient) => Promise<T>,
+    options?: TransactionOptions
+  ): Promise<T> {
+    const isolationLevel = options?.isolationLevel || 'serializable'
+
     // 建立記憶體快照以便事務失敗時復原
     const snapshot = new Map<string, string>()
     for (const [table, rows] of memoryDb.entries()) {
       snapshot.set(table, JSON.stringify(rows))
     }
 
+    const trx = new TransactionClient(isolationLevel, () => this.currentEnv, snapshot, this.connectionName)
+
+    // 若底層為外部連線 (MySQL / PostgreSQL)，發送 SET TRANSACTION ISOLATION LEVEL
+    if (this.connectionName === 'mysql' || this.connectionName === 'postgres') {
+      try {
+        await this.rawQuery(`SET TRANSACTION ISOLATION LEVEL ${isolationLevel.toUpperCase()}`)
+      } catch (err) {
+        console.warn(`[Database] 設定隔離等級 ${isolationLevel} 異常:`, err)
+      }
+    }
+
     try {
-      const result = await callback(Database)
+      const result = await callback(trx)
+      if (!trx.isCompleted) {
+        await trx.commit()
+      }
       return result
     } catch (err) {
-      // 復原記憶體快照
-      for (const [table, json] of snapshot.entries()) {
-        memoryDb.set(table, JSON.parse(json))
+      if (!trx.isCompleted) {
+        await trx.rollback()
       }
       throw err
     }

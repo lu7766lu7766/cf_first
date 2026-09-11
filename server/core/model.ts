@@ -1,7 +1,11 @@
-import { Database, QueryBuilder } from './database'
+import { Database, QueryBuilder, TransactionClient } from './database'
 import { dateTime, DateTime } from './time'
 import { getModelRelations, RelationClient } from './relations'
 import { HttpException } from './exception_handler'
+
+export interface ModelQueryOptions {
+  client?: TransactionClient | typeof Database
+}
 
 export type ModelHookFn<T = any> = (model: T) => Promise<void> | void
 
@@ -76,9 +80,12 @@ export class BaseModel {
     return this.table || this.name.toLowerCase() + 's'
   }
 
-  static query<T extends typeof BaseModel>(this: T): ModelQueryBuilder<T> {
+  static query<T extends typeof BaseModel>(this: T, options?: ModelQueryOptions): ModelQueryBuilder<T> {
     const tableName = (this as typeof BaseModel).getTableName()
-    return new ModelQueryBuilder<T>(this, Database.from(tableName))
+    const dbQuery = options?.client
+      ? options.client.from(tableName)
+      : Database.from(tableName)
+    return new ModelQueryBuilder<T>(this, dbQuery)
   }
 
   static async all<T extends typeof BaseModel>(this: T): Promise<Array<InstanceType<T>>> {
@@ -293,6 +300,46 @@ export class ModelQueryBuilder<T extends typeof BaseModel = typeof BaseModel> im
     public modelClass: T,
     private dbQuery: QueryBuilder<any>
   ) {}
+
+  /**
+   * 綁定事務交易客戶端 (AdonisJS Lucid query.useTransaction(trx))
+   */
+  useTransaction(trx: TransactionClient | typeof Database): this {
+    const tableName = (this.modelClass as typeof BaseModel).getTableName()
+    this.dbQuery = trx.from(tableName)
+    return this
+  }
+
+  /**
+   * 悲觀鎖排他查詢 (AdonisJS Lucid query.forUpdate(...tableNames))
+   */
+  forUpdate(...tableNames: string[]): this {
+    this.dbQuery.forUpdate(...tableNames)
+    return this
+  }
+
+  /**
+   * 悲觀鎖共享查詢 (AdonisJS Lucid query.forShare(...tableNames))
+   */
+  forShare(...tableNames: string[]): this {
+    this.dbQuery.forShare(...tableNames)
+    return this
+  }
+
+  getLockMode(): 'forUpdate' | 'forShare' | undefined {
+    return this.dbQuery.getLockMode()
+  }
+
+  getLockTables(): string[] | undefined {
+    return this.dbQuery.getLockTables()
+  }
+
+  /**
+   * 編譯當前查詢為 SQL 字串與參數綁定陣列 (AdonisJS Lucid query.toSQL())
+   */
+  toSQL(): { sql: string; bindings: any[] } {
+    return this.dbQuery.toSQL()
+  }
 
   select(...fields: string[]): this {
     this.dbQuery.select(...fields)

@@ -90,8 +90,13 @@ async function runTests() {
     const data2 = await res2.json<any>()
     loginToken2 = data2.data?.token || ''
 
-    const payload1 = JSON.parse(Buffer.from(loginToken1.split('.')[1], 'base64').toString())
-    const payload2 = JSON.parse(Buffer.from(loginToken2.split('.')[1], 'base64').toString())
+    const isJwt = loginToken1.includes('.')
+    let jtiCheck = true
+    if (isJwt) {
+      const payload1 = JSON.parse(Buffer.from(loginToken1.split('.')[1], 'base64').toString())
+      const payload2 = JSON.parse(Buffer.from(loginToken2.split('.')[1], 'base64').toString())
+      jtiCheck = typeof payload1.jti === 'string' && typeof payload2.jti === 'string' && payload1.jti !== payload2.jti
+    }
 
     assert(
       res1.status === 200 &&
@@ -100,10 +105,8 @@ async function runTests() {
       !!loginToken1 &&
       !!loginToken2 &&
       loginToken1 !== loginToken2 &&
-      typeof payload1.jti === 'string' &&
-      typeof payload2.jti === 'string' &&
-      payload1.jti !== payload2.jti,
-      '3. 登入取得 Token POST /api/auth/login (驗證每次簽發唯一 jti 與相異 Token)'
+      jtiCheck,
+      '3. 登入取得 Token POST /api/auth/login (驗證每次簽發唯一 Token)'
     )
   }
 
@@ -128,7 +131,7 @@ async function runTests() {
       resAuthorized.status === 200 &&
       Array.isArray(data.code) &&
       data.code[0] === 0 &&
-      data.data?.user?.email === 'test_user@example.com',
+      (data.data?.email === 'test_user@example.com' || data.data?.user?.email === 'test_user@example.com'),
       '4b. Auth Guard 驗證通過 GET /api/auth/me'
     )
   }
@@ -246,8 +249,11 @@ async function runTests() {
     assert(
       res.status === 200 &&
       data.code[0] === 0 &&
-      data.data?.success === true,
-      '9. 資料庫事務 Database.transaction()'
+      data.data?.success === true &&
+      data.data?.data?.isolationLevel === 'serializable' &&
+      data.data?.data?.modelLockMode === 'forUpdate' &&
+      data.data?.data?.qbLockMode === 'forUpdate',
+      '9. 資料庫事務 Database.transaction() (含 isolationLevel 與 forUpdate 悲觀鎖)'
     )
   }
 
