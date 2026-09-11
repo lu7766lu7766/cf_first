@@ -1,5 +1,19 @@
+import { env } from '../start/env'
+
+export interface DatabaseConnectionConfig {
+  client: string
+  binding?: string
+  filename?: string
+  host?: string
+  port?: number
+  user?: string
+  password?: string
+  database?: string
+  connectionString?: string
+}
+
 export interface DatabaseConfig {
-  default: string
+  default: 'd1' | 'sqlite' | 'postgres' | 'mysql' | string
   connections: {
     d1: {
       client: 'd1'
@@ -9,35 +23,47 @@ export interface DatabaseConfig {
       client: 'sqlite'
       filename: string
     }
-    postgres: {
-      client: 'pg'
-      connectionString?: string
-    }
-    mysql: {
-      client: 'mysql2'
-      connectionString?: string
-    }
+    postgres: DatabaseConnectionConfig
+    mysql: DatabaseConnectionConfig
+    [key: string]: DatabaseConnectionConfig
   }
 }
 
+const dbHost = env.get('DB_HOST', '127.0.0.1')
+const dbPort = env.get('DB_PORT', 3306)
+const dbUser = env.get('DB_USER', 'root')
+const dbPassword = env.get('DB_PASSWORD', '')
+const dbName = env.get('DB_DATABASE', 'cf_first')
+const databaseUrl = env.get('DATABASE_URL')
+
 export const databaseConfig: DatabaseConfig = {
-  default: 'd1',
+  default: env.get('DB_CONNECTION', 'd1'),
   connections: {
     d1: {
       client: 'd1',
-      binding: 'DB'
+      binding: env.get('D1_BINDING', 'DB')
     },
     sqlite: {
       client: 'sqlite',
-      filename: ':memory:'
+      filename: env.get('DB_DATABASE', ':memory:')
     },
     postgres: {
       client: 'pg',
-      connectionString: process.env.DATABASE_URL
+      host: dbHost,
+      port: env.get('DB_PORT', 5432),
+      user: dbUser,
+      password: dbPassword,
+      database: dbName,
+      connectionString: databaseUrl || `postgresql://${dbUser}:${dbPassword}@${dbHost}:${env.get('DB_PORT', 5432)}/${dbName}`
     },
     mysql: {
       client: 'mysql2',
-      connectionString: process.env.MYSQL_URL
+      host: dbHost,
+      port: dbPort,
+      user: dbUser,
+      password: dbPassword,
+      database: dbName,
+      connectionString: databaseUrl || `mysql://${dbUser}:${dbPassword}@${dbHost}:${dbPort}/${dbName}`
     }
   }
 }

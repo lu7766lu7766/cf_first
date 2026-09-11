@@ -1,8 +1,13 @@
 import type { Context } from 'hono'
 import type { HttpContext, AdonisRequest, AdonisResponse, Env } from './types'
 import { MacroManager } from './macro'
+import { dateTime } from './time'
+import { env } from '../start/env'
 
 export function createHttpContext(c: Context<{ Bindings: Env }>): HttpContext {
+  if (c.env) {
+    env.setRuntimeEnv(c.env)
+  }
   let cachedBody: any = null
   let bodyParsed = false
 
@@ -179,7 +184,9 @@ export function createHttpContext(c: Context<{ Bindings: Env }>): HttpContext {
     auth: null, // Initialized by AuthManager or middleware
     params: c.req.param() as Record<string, string>,
     env: c.env || {},
-    rawContext: c
+    rawContext: c,
+    time: dateTime,
+    dateTime
   }
 
   MacroManager.applyContextMacros(httpContext)

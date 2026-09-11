@@ -1,5 +1,6 @@
 import { AuthenticationException } from './exception_handler'
 import type { HttpContext, MiddlewareHandler } from './types'
+import { appConfig } from '../config/app'
 
 export interface UserPayload {
   id: number | string
@@ -179,7 +180,7 @@ export class AuthManager {
   constructor(private ctx: HttpContext) {}
 
   use(guardName: 'jwt' | 'tokens'): AuthGuard {
-    const secret = this.ctx.env.JWT_SECRET || 'cf-first-super-secret-adonis-jwt-key'
+    const secret = this.ctx.env.JWT_SECRET || this.ctx.env.APP_KEY || appConfig.appKey || 'cf-first-super-secret-adonis-jwt-key'
     if (guardName === 'tokens') {
       return new TokensGuard(this.ctx, secret)
     }

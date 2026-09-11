@@ -1,4 +1,5 @@
 import type { Env } from './types'
+import { dateTime } from './time'
 
 export interface QueryOptions {
   table: string
@@ -14,11 +15,11 @@ const memoryDb = new Map<string, Array<Record<string, any>>>()
 
 // 初始化預設假資料
 memoryDb.set('notes', [
-  { id: 1, title: '【歡迎】AdonisJS 7 on Cloudflare Workers', content: '體驗極致邊緣效能與極速 API', created_at: new Date().toISOString() },
-  { id: 2, title: '【特性】Active Record & IoC 依賴注入', content: '使用熟悉的 Adonis Class-based 開發風格', created_at: new Date().toISOString() }
+  { id: 1, title: '【歡迎】AdonisJS 7 on Cloudflare Workers', content: '體驗極致邊緣效能與極速 API', created_at: dateTime.now().toISO() },
+  { id: 2, title: '【特性】Active Record & IoC 依賴注入', content: '使用熟悉的 Adonis Class-based 開發風格', created_at: dateTime.now().toISO() }
 ])
 memoryDb.set('users', [
-  { id: 1, email: 'admin@example.com', password: 'password123', full_name: '系統管理員', created_at: new Date().toISOString() }
+  { id: 1, email: 'admin@example.com', password: 'password123', full_name: '系統管理員', created_at: dateTime.now().toISO() }
 ])
 
 export class QueryBuilder<T = any> {
@@ -140,7 +141,7 @@ export class QueryBuilder<T = any> {
 
   async insert(data: Record<string, any>): Promise<any> {
     const env = this.getEnv()
-    const now = new Date().toISOString()
+    const now = dateTime.now().toISO() || new Date().toISOString()
     const record = { ...data, created_at: data.created_at || now, updated_at: now }
 
     if (env?.DB) {
@@ -166,7 +167,7 @@ export class QueryBuilder<T = any> {
 
   async update(data: Record<string, any>): Promise<number> {
     const env = this.getEnv()
-    const now = new Date().toISOString()
+    const now = dateTime.now().toISO() || new Date().toISOString()
     const record = { ...data, updated_at: now }
 
     if (env?.DB) {

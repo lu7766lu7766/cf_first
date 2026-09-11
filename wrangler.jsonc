@@ -9,6 +9,11 @@
   "assets": {
     "directory": "./dist",
     "not_found_handling": "single-page-application"
+  },
+  "vars": {
+    "APP_TIMEZONE": "Asia/Taipei",
+    "NODE_ENV": "development",
+    "DB_CONNECTION": "d1"
   }
   // =========================================================================
   // Cloudflare D1 關聯式資料庫綁定範例 (欲啟用時請取消下方註解)

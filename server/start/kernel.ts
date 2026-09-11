@@ -3,6 +3,7 @@ import { router } from '../core/router'
 import { ResponseMacro } from '../core/macro'
 import { AppExceptionHandler } from '../app/exceptions/handler'
 import ApiFormatMiddleware from '../app/middleware/api_format_middleware'
+import { dateTime } from '../core/time'
 
 /**
  * 1. 註冊伺服器級 / 全域中介層 (Global Middleware Stack)
@@ -36,7 +37,8 @@ export function bootstrapKernel() {
       message,
       data,
       meta: {
-        timestamp: new Date().toISOString(),
+        timestamp: dateTime.now().toISO(),
+        timezone: dateTime.getTimezone(),
         framework: 'AdonisJS 7 style on Hono Edge'
       }
     })

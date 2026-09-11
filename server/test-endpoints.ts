@@ -2,6 +2,10 @@ import app from './index'
 import { kernel } from './core/kernel'
 import { middleware } from './start/kernel'
 import ApiFormatMiddleware from './app/middleware/api_format_middleware'
+import { env } from './start/env'
+import { dateTime, DateTime } from './core/time'
+import { appConfig } from './config/app'
+import { databaseConfig } from './config/database'
 
 async function runTests() {
   console.log('🧪 開始執行 AdonisJS 7 API 功能自動化測試...\n')
@@ -257,6 +261,69 @@ async function runTests() {
 
     const namedAuthHandler = middleware.auth('jwt')
     assert(typeof namedAuthHandler === 'function', '14b. HttpKernel.named 具名中介層工廠產生 (middleware.auth)')
+  }
+
+  // 15. Env 核心環境變數系統讀取與型別驗證
+  {
+    const appKey = env.get('APP_KEY')
+    const timezone = env.get('APP_TIMEZONE')
+    const dbConn = env.get('DB_CONNECTION')
+    const port = env.get('PORT')
+
+    assert(
+      typeof appKey === 'string' && appKey.length > 0 &&
+      timezone === 'Asia/Taipei' &&
+      ['d1', 'sqlite', 'postgres', 'mysql'].includes(dbConn) &&
+      typeof port === 'number' && port > 0,
+      '15. Env 核心環境變數系統讀取與型別解析 (APP_KEY, APP_TIMEZONE, DB_CONNECTION, PORT)'
+    )
+  }
+
+  // 16. Luxon TimeService 與 DateTime 時間物件實作
+  {
+    const now = dateTime.now()
+    const formatted = dateTime.format(now, 'yyyy-MM-dd')
+    const plusDays = now.plus({ days: 3 })
+    const isLuxonInstance = now instanceof DateTime
+
+    assert(
+      isLuxonInstance &&
+      now.zoneName === 'Asia/Taipei' &&
+      formatted.length === 10 &&
+      plusDays.diff(now, 'days').days >= 2.9,
+      '16. Luxon TimeService 時間物件運算與時區綁定 (Asia/Taipei)'
+    )
+  }
+
+  // 17. GET /api/env-info (環境變數設定檢驗路由)
+  {
+    const res = await app.request('/api/env-info')
+    const data = await res.json<any>()
+    assert(
+      res.status === 200 &&
+      data.code[0] === 0 &&
+      data.data?.app?.timezone === 'Asia/Taipei' &&
+      data.data?.app?.appKeyConfigured === true &&
+      typeof data.data?.app?.appKeyMasked === 'string' &&
+      data.data?.database?.defaultConnection === 'd1',
+      '17. 環境變數檢驗路由 GET /api/env-info (時區、遮罩密鑰與 DB 資訊)'
+    )
+  }
+
+  // 18. GET /api/time-test (Luxon 時間物件運算展示路由)
+  {
+    const res = await app.request('/api/time-test')
+    const data = await res.json<any>()
+    assert(
+      res.status === 200 &&
+      data.code[0] === 0 &&
+      data.data?.now?.timezone === 'Asia/Taipei' &&
+      typeof data.data?.calculations?.plusOneWeek === 'string' &&
+      typeof data.data?.calculations?.inUtc === 'string' &&
+      typeof data.data?.calculations?.inTokyo === 'string' &&
+      typeof data.data?.calculations?.inNewYork === 'string',
+      '18. Luxon 時間物件運算端點 GET /api/time-test (跨時區轉換與加減天數)'
+    )
   }
 
   console.log(`\n測試總結: ${passed} 通過, ${failed} 失敗`)

@@ -3,17 +3,23 @@ import { HttpException } from "../core/exception_handler"
 import AuthController from "../app/controllers/auth_controller"
 import NotesController from "../app/controllers/notes_controller"
 import { middleware } from "./kernel"
+import { dateTime } from "../core/time"
+import { appConfig } from "../config/app"
+import { databaseConfig } from "../config/database"
 
 // 所有 API 路由統一使用 router.group() 管理，全域中介層 (ApiFormatMiddleware) 已在 start/kernel.ts 註冊
 router
   .group(() => {
     // 1. 健康檢查路由 (/api/health)
-    router.get("/health", () => {
+    router.get("/health", (ctx) => {
+      const now = ctx.time.now()
       return {
         status: "online",
         framework: "Hono + AdonisJS 7 API architecture",
         runtime: "Cloudflare Workers (Edge)",
-        serverTime: new Date().toISOString(),
+        serverTime: now.toISO(),
+        timezone: ctx.time.getTimezone(),
+        formattedTime: ctx.time.format(now, "yyyy-MM-dd HH:mm:ss ZZ"),
       }
     })
 
@@ -55,6 +61,65 @@ router
     // 8. 格式整合測試路由 (/api/format-test)
     router.get("/format-test", () => {
       return { message: "直接返回物件，由中介層格式化" }
+    })
+
+    // 9. 環境變數設定檢驗路由 (/api/env-info)
+    router.get("/env-info", () => {
+      const rawKey = appConfig.appKey || ""
+      const maskedKey = rawKey.length > 8
+        ? `${rawKey.slice(0, 4)}...${rawKey.slice(-4)}`
+        : "********"
+
+      return {
+        app: {
+          timezone: appConfig.timezone,
+          nodeEnv: appConfig.nodeEnv,
+          port: appConfig.port,
+          appKeyConfigured: !!rawKey,
+          appKeyMasked: maskedKey
+        },
+        database: {
+          defaultConnection: databaseConfig.default,
+          d1Binding: databaseConfig.connections.d1.binding,
+          mysql: {
+            host: databaseConfig.connections.mysql.host,
+            port: databaseConfig.connections.mysql.port,
+            user: databaseConfig.connections.mysql.user,
+            database: databaseConfig.connections.mysql.database
+          },
+          postgres: {
+            host: databaseConfig.connections.postgres.host,
+            port: databaseConfig.connections.postgres.port,
+            user: databaseConfig.connections.postgres.user,
+            database: databaseConfig.connections.postgres.database
+          }
+        }
+      }
+    })
+
+    // 10. Luxon 時間物件運算展示路由 (/api/time-test)
+    router.get("/time-test", (ctx) => {
+      const now = ctx.time.now()
+      const oneWeekLater = now.plus({ weeks: 1 })
+      const utcTime = now.toUTC()
+      const tokyoTime = now.setZone("Asia/Tokyo")
+      const newYorkTime = now.setZone("America/New_York")
+
+      return {
+        now: {
+          iso: now.toISO(),
+          timezone: now.zoneName,
+          formatted: ctx.time.format(now, "yyyy-MM-dd HH:mm:ss.SSS ZZ"),
+          dayOfWeek: now.weekdayLong
+        },
+        calculations: {
+          plusOneWeek: ctx.time.format(oneWeekLater, "yyyy-MM-dd HH:mm:ss"),
+          inUtc: utcTime.toISO(),
+          inTokyo: ctx.time.format(tokyoTime, "yyyy-MM-dd HH:mm:ss ZZ"),
+          inNewYork: ctx.time.format(newYorkTime, "yyyy-MM-dd HH:mm:ss ZZ"),
+          daysInMonth: now.daysInMonth
+        }
+      }
     })
   })
   .prefix("/api")

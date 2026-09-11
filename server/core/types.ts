@@ -1,10 +1,20 @@
 import type { Context } from 'hono'
 import type { BaseController } from './controller'
+import type { TimeService } from './time'
 
 export interface Env {
   DB?: D1Database
   JWT_SECRET?: string
   APP_KEY?: string
+  APP_TIMEZONE?: string
+  NODE_ENV?: string
+  DB_CONNECTION?: string
+  DB_HOST?: string
+  DB_PORT?: number | string
+  DB_USER?: string
+  DB_PASSWORD?: string
+  DB_DATABASE?: string
+  DATABASE_URL?: string
   [key: string]: any
 }
 
@@ -47,6 +57,8 @@ export interface HttpContext {
   params: Record<string, string>
   env: Env
   rawContext: Context<{ Bindings: Env }>
+  time: TimeService
+  dateTime: TimeService
   [key: string]: any // Support dynamic Macros
 }
 
