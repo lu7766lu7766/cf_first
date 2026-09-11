@@ -1,6 +1,7 @@
 #!/usr/bin/env tsx
 import fs from 'fs'
 import path from 'path'
+import { execSync } from 'child_process'
 import { fileURLToPath } from 'url'
 
 const __filename = fileURLToPath(import.meta.url)
@@ -24,9 +25,10 @@ function printHelp() {
   \x1b[1mmake:model <Name>\x1b[0m        建立新的 Active Record Model 類別
   \x1b[1mmake:middleware <Name>\x1b[0m   建立新的 Middleware 中介層
   \x1b[1mmake:validator <Name>\x1b[0m    建立新的 VineJS Class Validator
-  \x1b[1mmake:migration <Name>\x1b[0m    建立新的 SQL 資料庫遷移檔案
+  \x1b[1mmake:migration <Name>\x1b[0m    建立新的 Knex TypeScript 遷移類別檔案
   \x1b[1mmake:seeder <Name>\x1b[0m       建立新的 Seeder 種子資料腳本
-  \x1b[1mmigration:run\x1b[0m            執行資料庫遷移
+  \x1b[1mmigration:run\x1b[0m            執行 Knex 資料庫遷移
+  \x1b[1mmigration:rollback\x1b[0m       執行資料庫遷移回滾
   \x1b[1mdb:seed\x1b[0m                  執行資料庫種子腳本
 `)
 }
@@ -164,18 +166,31 @@ export const ${targetName.toLowerCase()}Middleware: MiddlewareHandler = async (c
         console.error('❌ 請提供 Migration 名稱，例如: pnpm ace make:migration create_products_table')
         return
       }
-      const timestamp = Math.floor(Date.now() / 1000)
-      const fileName = `${timestamp}_${targetName.toLowerCase()}.sql`
+      const timestamp = Date.now()
+      const cleanName = targetName.toLowerCase()
+      const fileName = `${timestamp}_${cleanName}.ts`
       const dir = path.join(rootDir, 'database/migrations')
       ensureDir(dir)
       const filePath = path.join(dir, fileName)
+      const tableName = cleanName.replace(/^create_|_table$/g, '')
 
-      const content = `-- Migration: ${targetName}
-CREATE TABLE IF NOT EXISTS ${targetName.replace(/^create_|_table$/g, '')} (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
+      const content = `import { BaseSchema } from '../../core/schema'
+
+export default class extends BaseSchema {
+  protected tableName = '${tableName}'
+
+  async up() {
+    this.schema.createTable(this.tableName, (table) => {
+      table.increments('id').primary()
+      table.timestamp('created_at').defaultTo(this.now())
+      table.timestamp('updated_at').defaultTo(this.now())
+    })
+  }
+
+  async down() {
+    this.schema.dropTable(this.tableName)
+  }
+}
 `
       fs.writeFileSync(filePath, content, 'utf-8')
       console.log(`\x1b[32m✔ [CREATE]\x1b[0m server/database/migrations/${fileName}`)
@@ -208,27 +223,93 @@ export default class ${className} extends BaseSeeder {
     }
 
     case 'migration:run': {
-      console.log('🚀 開始執行資料庫遷移 (Migrations)...')
+      console.log('🚀 開始執行 Knex TypeScript 資料庫遷移 (Migrations)...')
       const dir = path.join(rootDir, 'database/migrations')
       if (fs.existsSync(dir)) {
-        const files = fs.readdirSync(dir).filter((f: string) => f.endsWith('.sql'))
+        const files = fs.readdirSync(dir).filter((f: string) => f.endsWith('.ts')).sort()
         for (const file of files) {
-          console.log(`   \x1b[36m▶ [EXECUTE]\x1b[0m ${file}`)
+          const filePath = path.join(dir, file)
+          console.log(`   \x1b[36m▶ [COMPILE & RUN]\x1b[0m ${file} -> 本機 D1 SQLite`)
+          try {
+            const migrationModule = await import(filePath)
+            const MigrationClass = migrationModule.default
+            const migration = new MigrationClass()
+            const sqls: string[] = await migration.compileUp()
+
+            const tempFile = path.join(rootDir, 'temp_migration.sql')
+            fs.writeFileSync(tempFile, sqls.join(';\n') + ';', 'utf-8')
+            try {
+              execSync(`pnpm exec wrangler d1 execute DB --local --file="${tempFile}"`, {
+                stdio: 'inherit',
+                cwd: path.join(rootDir, '..')
+              })
+            } finally {
+              if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile)
+            }
+          } catch (e) {
+            console.error(`❌ 執行遷移失敗 (${file}):`, e)
+          }
         }
-        console.log(`\x1b[32m✔ 成功處理 ${files.length} 個遷移檔案。\x1b[0m`)
-        console.log('\x1b[33m💡 提示: 若要將遷移直接套用於 Cloudflare 遠端 D1，可執行:\x1b[0m')
-        console.log('   pnpm exec wrangler d1 execute <db-name> --file=server/database/migrations/<file>.sql')
+        console.log(`\x1b[32m✔ 成功處理 ${files.length} 個 Knex 遷移檔案。\x1b[0m`)
+      }
+      break
+    }
+
+    case 'migration:rollback': {
+      console.log('🔄 開始執行資料庫遷移回滾 (Rollback)...')
+      const dir = path.join(rootDir, 'database/migrations')
+      if (fs.existsSync(dir)) {
+        const files = fs.readdirSync(dir).filter((f: string) => f.endsWith('.ts')).sort().reverse()
+        for (const file of files) {
+          const filePath = path.join(dir, file)
+          console.log(`   \x1b[33m◀ [ROLLBACK]\x1b[0m ${file}`)
+          try {
+            const migrationModule = await import(filePath)
+            const MigrationClass = migrationModule.default
+            const migration = new MigrationClass()
+            const sqls: string[] = await migration.compileDown()
+
+            const tempFile = path.join(rootDir, 'temp_rollback.sql')
+            fs.writeFileSync(tempFile, sqls.join(';\n') + ';', 'utf-8')
+            try {
+              execSync(`pnpm exec wrangler d1 execute DB --local --file="${tempFile}"`, {
+                stdio: 'inherit',
+                cwd: path.join(rootDir, '..')
+              })
+            } finally {
+              if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile)
+            }
+          } catch (e) {
+            console.error(`❌ 回滾失敗 (${file}):`, e)
+          }
+        }
+        console.log(`\x1b[32m✔ 成功回滾 ${files.length} 個 Knex 遷移檔案。\x1b[0m`)
       }
       break
     }
 
     case 'db:seed': {
-      console.log('🌱 載入種子檔案並執行...')
+      console.log('🌱 載入種子檔案並執行 (Seeder)...')
       try {
+        const { Hash } = await import('./core/hash')
+        const hashedRoot = await Hash.make('root')
+        const seedSql = `INSERT OR REPLACE INTO users (id, username, email, password, full_name, created_at, updated_at) VALUES (1, 'root', 'root@example.com', '${hashedRoot}', '系統管理員 Root', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);`
+
+        console.log('   \x1b[36m▶ [SEED]\x1b[0m 寫入 root/root 至本機 D1 SQLite 資料庫...')
+        try {
+          execSync(`pnpm exec wrangler d1 execute DB --local --command="${seedSql}"`, {
+            stdio: 'inherit',
+            cwd: path.join(rootDir, '..')
+          })
+        } catch (err) {
+          console.warn('⚠️ Wrangler D1 種子執行警告:', err)
+        }
+
         const seederModule = await import('./database/seeders/main_seeder')
         const SeederClass = seederModule.default
         const seeder = new SeederClass()
         await seeder.run()
+        console.log('\x1b[32m✔ 種子資料注入完成！\x1b[0m')
       } catch (e) {
         console.error('❌ 種子執行失敗:', e)
       }

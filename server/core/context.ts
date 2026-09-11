@@ -3,6 +3,7 @@ import type { HttpContext, AdonisRequest, AdonisResponse, Env } from './types'
 import { MacroManager } from './macro'
 import { dateTime } from './time'
 import { env } from '../start/env'
+import { serializeToJson } from './serializer'
 
 export function createHttpContext(c: Context<{ Bindings: Env }>): HttpContext {
   if (c.env) {
@@ -138,7 +139,8 @@ export function createHttpContext(c: Context<{ Bindings: Env }>): HttpContext {
     },
 
     json(data: any, status?: number) {
-      this.lazyBody = { content: [data] }
+      const serialized = serializeToJson(data)
+      this.lazyBody = { content: [serialized] }
       const finalStatus = status || statusCode
       const headers: Record<string, string> = {
         'Content-Type': 'application/json'
@@ -146,7 +148,7 @@ export function createHttpContext(c: Context<{ Bindings: Env }>): HttpContext {
       customHeaders.forEach((val, k) => {
         headers[k] = val
       })
-      _lastResponse = new Response(JSON.stringify(data), {
+      _lastResponse = new Response(JSON.stringify(serialized), {
         status: finalStatus,
         headers
       })
@@ -154,10 +156,10 @@ export function createHttpContext(c: Context<{ Bindings: Env }>): HttpContext {
     },
 
     send(data: any) {
-      this.lazyBody = { content: [data] }
       if (typeof data === 'object' && !(data instanceof Response)) {
         return this.json(data)
       }
+      this.lazyBody = { content: [data] }
       const headers: Record<string, string> = {}
       customHeaders.forEach((val, k) => {
         headers[k] = val

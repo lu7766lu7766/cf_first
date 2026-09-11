@@ -16,6 +16,11 @@ const token = ref<string>('')
 const loadingAction = ref<string | null>(null)
 const isCopied = ref(false)
 
+const authForm = ref({
+  username: 'root',
+  password: 'root'
+})
+
 const logResult = (name: string, method: string, status: number, data: unknown, isError = false) => {
   currentLog.value = {
     time: new Date().toLocaleTimeString('zh-TW', { hour12: false }),
@@ -117,13 +122,11 @@ const testHealth = () => runApi('health', async () => {
   }
 })
 
-// 2. 註冊帳號
-const testRegister = () => runApi('register', async () => {
-  const randomSuffix = Math.floor(Math.random() * 1000)
+// 2. 註冊帳號 (預設 user/user)
+const testRegister = (customUsername = 'user', customPassword = 'user') => runApi('register', async () => {
   const body = {
-    email: `user${randomSuffix}@example.com`,
-    password: 'password123',
-    fullName: `Test User ${randomSuffix}`
+    username: customUsername,
+    password: customPassword
   }
   try {
     const res = await fetch('/api/auth/register', {
@@ -142,11 +145,11 @@ const testRegister = () => runApi('register', async () => {
   }
 })
 
-// 3. 登入取得 Token
-const testLogin = () => runApi('login', async () => {
+// 3. 登入取得 Token (預設 root/root 或自訂帳密)
+const testLogin = (customUsername?: string, customPassword?: string) => runApi('login', async () => {
   const body = {
-    email: 'admin@example.com',
-    password: 'password123'
+    username: customUsername !== undefined ? customUsername : (authForm.value.username || 'root'),
+    password: customPassword !== undefined ? customPassword : (authForm.value.password || 'root')
   }
   try {
     const res = await fetch('/api/auth/login', {
@@ -273,6 +276,17 @@ const testFormat = () => runApi('format', async () => {
     logResult('/api/format-test', 'GET', 500, String(e), true)
   }
 })
+
+// 12. Model 關聯與 Luxon DateTime 測試
+const testRelation = () => runApi('relation', async () => {
+  try {
+    const res = await fetch('/api/relation-test')
+    const data = await res.json()
+    logResult('/api/relation-test', 'GET', res.status, data)
+  } catch (e) {
+    logResult('/api/relation-test', 'GET', 500, String(e), true)
+  }
+})
 </script>
 
 <template>
@@ -315,6 +329,32 @@ const testFormat = () => runApi('format', async () => {
           <span class="group-icon">🔐</span>
           <h2 class="group-title">身份驗證與系統守護 (Auth & System)</h2>
         </div>
+
+        <!-- 快速帳密互動列 -->
+        <div class="auth-toolbar">
+          <div class="auth-toolbar-fields">
+            <div class="auth-input-item">
+              <span class="auth-input-label font-mono">帳號 USERNAME</span>
+              <input v-model="authForm.username" class="auth-field font-mono" placeholder="root 或 user" />
+            </div>
+            <div class="auth-input-item">
+              <span class="auth-input-label font-mono">密碼 PASSWORD</span>
+              <input v-model="authForm.password" type="password" class="auth-field font-mono" placeholder="root 或 user" />
+            </div>
+          </div>
+          <div class="auth-toolbar-actions">
+            <button class="auth-action-pill" @click="testLogin(authForm.username, authForm.password)">
+              🔐 自訂登入
+            </button>
+            <button class="auth-action-pill primary" @click="testRegister('user', 'user')">
+              ✨ 註冊 user / user
+            </button>
+            <button class="auth-action-pill accent" @click="testLogin('root', 'root')">
+              ⚡ 登入 root / root
+            </button>
+          </div>
+        </div>
+
         <div class="button-grid">
           <button
             class="api-action-btn"
@@ -332,27 +372,27 @@ const testFormat = () => runApi('format', async () => {
           <button
             class="api-action-btn"
             :class="{ loading: loadingAction === 'register' }"
-            @click="testRegister"
+            @click="testRegister('user', 'user')"
           >
             <div class="btn-top">
               <span class="badge-method post">POST</span>
               <span class="btn-number font-mono">#02</span>
             </div>
             <div class="btn-path font-mono">/api/auth/register</div>
-            <div class="btn-desc">隨機建立會員帳號並存取 Token</div>
+            <div class="btn-desc">註冊 user/user 帳號並存取 JWT</div>
           </button>
 
           <button
             class="api-action-btn"
             :class="{ loading: loadingAction === 'login' }"
-            @click="testLogin"
+            @click="testLogin('root', 'root')"
           >
             <div class="btn-top">
               <span class="badge-method post">POST</span>
               <span class="btn-number font-mono">#03</span>
             </div>
             <div class="btn-path font-mono">/api/auth/login</div>
-            <div class="btn-desc">以管理員身分登入獲取憑證</div>
+            <div class="btn-desc">以 root/root 登入獲取 JWT Token</div>
           </button>
 
           <button
@@ -365,7 +405,7 @@ const testFormat = () => runApi('format', async () => {
               <span class="btn-number font-mono">#04</span>
             </div>
             <div class="btn-path font-mono">/api/auth/me</div>
-            <div class="btn-desc">驗證 Bearer Token (Auth Guard)</div>
+            <div class="btn-desc">需 Bearer JWT，由 SQLite 撈取使用者真實資料</div>
           </button>
         </div>
       </section>
@@ -475,6 +515,19 @@ const testFormat = () => runApi('format', async () => {
             </div>
             <div class="btn-path font-mono">/api/format-test</div>
             <div class="btn-desc">ApiFormatMiddleware 統一響應格式</div>
+          </button>
+
+          <button
+            class="api-action-btn"
+            :class="{ loading: loadingAction === 'relation' }"
+            @click="testRelation"
+          >
+            <div class="btn-top">
+              <span class="badge-method get">GET</span>
+              <span class="btn-number font-mono">#12</span>
+            </div>
+            <div class="btn-path font-mono">/api/relation-test</div>
+            <div class="btn-desc">Model 關聯 (hasMany/belongsTo) 與 DateTime 驗證</div>
           </button>
         </div>
       </section>
@@ -732,6 +785,109 @@ const testFormat = () => runApi('format', async () => {
   letter-spacing: -0.01em;
   text-transform: uppercase;
   font-size: 0.85rem;
+}
+
+/* ==========================================
+   Auth 快速互動列樣式
+   ========================================== */
+.auth-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.85rem 1.15rem;
+  background: rgba(30, 41, 59, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: blur(12px);
+}
+
+.auth-toolbar-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.auth-input-item {
+  display: flex;
+  align-items: center;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  padding: 0.35rem 0.65rem;
+  gap: 0.5rem;
+}
+
+.auth-input-label {
+  font-size: 0.65rem;
+  font-weight: 700;
+  color: var(--text-tertiary);
+  letter-spacing: 0.05em;
+}
+
+.auth-field {
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  width: 110px;
+  outline: none;
+}
+
+.auth-field:focus {
+  color: #fff;
+}
+
+.auth-toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.auth-action-pill {
+  padding: 0.4rem 0.85rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.auth-action-pill:hover {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.3);
+  transform: translateY(-1px);
+}
+
+.auth-action-pill.primary {
+  background: rgba(59, 130, 246, 0.2);
+  border-color: rgba(59, 130, 246, 0.5);
+  color: #93c5fd;
+}
+
+.auth-action-pill.primary:hover {
+  background: rgba(59, 130, 246, 0.35);
+  border-color: #60a5fa;
+  color: #fff;
+}
+
+.auth-action-pill.accent {
+  background: rgba(243, 128, 32, 0.2);
+  border-color: rgba(243, 128, 32, 0.5);
+  color: #fdba74;
+}
+
+.auth-action-pill.accent:hover {
+  background: rgba(243, 128, 32, 0.35);
+  border-color: #f97316;
+  color: #fff;
 }
 
 .button-grid {

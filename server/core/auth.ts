@@ -1,12 +1,15 @@
 import { AuthenticationException } from './exception_handler'
 import type { HttpContext, MiddlewareHandler } from './types'
 import { appConfig } from '../config/app'
+import { serializeToJson } from './serializer'
 
 export interface UserPayload {
   id: number | string
   email: string
   [key: string]: any
 }
+
+export type Authenticatable = UserPayload | { toJSON(): any } | any
 
 // 簡易 Web Crypto JWT 實作，零外部依賴且完全相容 Cloudflare Workers
 class WebCryptoJwt {
@@ -123,7 +126,7 @@ export class AuthGuard {
     throw new Error('Method not implemented')
   }
 
-  async generate(user: UserPayload): Promise<string> {
+  async generate(user: Authenticatable): Promise<string> {
     throw new Error('Method not implemented')
   }
 }
@@ -144,8 +147,9 @@ export class JwtGuard extends AuthGuard {
     }
   }
 
-  async generate(user: UserPayload, expiresInSeconds = 86400): Promise<string> {
-    return await WebCryptoJwt.sign(user, this.secret, expiresInSeconds)
+  async generate(user: Authenticatable, expiresInSeconds = 86400): Promise<string> {
+    const payload = serializeToJson(user)
+    return await WebCryptoJwt.sign(payload, this.secret, expiresInSeconds)
   }
 }
 
@@ -164,11 +168,12 @@ export class TokensGuard extends AuthGuard {
     return user
   }
 
-  async generate(user: UserPayload): Promise<string> {
+  async generate(user: Authenticatable): Promise<string> {
+    const payload = serializeToJson(user)
     const randomBytes = new Uint8Array(24)
     crypto.getRandomValues(randomBytes)
     const token = 'oat_' + Array.from(randomBytes, (b) => b.toString(16).padStart(2, '0')).join('')
-    memoryTokenStore.set(token, user)
+    memoryTokenStore.set(token, payload)
     return token
   }
 }
@@ -203,10 +208,11 @@ export class AuthManager {
     }
   }
 
-  async login(user: UserPayload, guardName: 'jwt' | 'tokens' = 'jwt'): Promise<string> {
+  async login(user: Authenticatable, guardName: 'jwt' | 'tokens' = 'jwt'): Promise<string> {
     const guard = this.use(guardName)
-    this.user = user
-    return await guard.generate(user)
+    const payload = serializeToJson(user)
+    this.user = payload
+    return await guard.generate(payload)
   }
 }
 

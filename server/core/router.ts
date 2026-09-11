@@ -6,6 +6,7 @@ import { AuthManager } from './auth'
 import { Database } from './database'
 import { HttpExceptionHandler } from './exception_handler'
 import { HttpKernel } from './kernel'
+import { serializeToJson } from './serializer'
 
 export class Route {
   public middlewares: MiddlewareHandler[] = []
@@ -322,6 +323,7 @@ export class AdonisRouter {
                 }
 
                 if (result !== undefined && !(result instanceof Response)) {
+                  result = serializeToJson(result)
                   ctx.response.lazyBody = { content: [result] }
                 }
 

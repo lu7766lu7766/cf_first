@@ -3,9 +3,11 @@ import { HttpException } from "../core/exception_handler"
 import AuthController from "../app/controllers/auth_controller"
 import NotesController from "../app/controllers/notes_controller"
 import { middleware } from "./kernel"
-import { dateTime } from "../core/time"
+import { dateTime, DateTime } from "../core/time"
 import { appConfig } from "../config/app"
 import { databaseConfig } from "../config/database"
+import { User } from "../app/models/user"
+import { Note } from "../app/models/note"
 
 // 所有 API 路由統一使用 router.group() 管理，全域中介層 (ApiFormatMiddleware) 已在 start/kernel.ts 註冊
 router
@@ -118,6 +120,47 @@ router
           inTokyo: ctx.time.format(tokyoTime, "yyyy-MM-dd HH:mm:ss ZZ"),
           inNewYork: ctx.time.format(newYorkTime, "yyyy-MM-dd HH:mm:ss ZZ"),
           daysInMonth: now.daysInMonth
+        }
+      }
+    })
+
+    // 11. Model 關聯與 Luxon DateTime 測試路由 (/api/relation-test)
+    router.get("/relation-test", async () => {
+      // 1. 查找 root 使用者
+      const user = await User.findBy("username", "root")
+      if (!user) {
+        throw new HttpException("找不到 root 使用者，請先執行 seeder", 404)
+      }
+
+      // 2. 確保至少有一筆 note 指向 user
+      let note = await Note.findBy("user_id", user.id)
+      if (!note) {
+        note = await Note.create({
+          user_id: user.id,
+          title: "Root 的第一篇關聯筆記",
+          content: "這是一篇透過 hasMany / belongsTo 關聯建立的筆記"
+        })
+      }
+
+      // 3. 測試 user.load('notes') (hasMany)
+      await user.load("notes")
+
+      // 4. 測試 note.load('user') (belongsTo)
+      await note.load("user")
+
+      return {
+        message: "Model 關聯與 DateTime (Luxon) 運作正常",
+        dateTimeCheck: {
+          isCreatedAtDateTime: DateTime.isDateTime(user.createdAt),
+          userCreatedAtIso: user.createdAt?.toISO(),
+          noteCreatedAtIso: note.createdAt?.toISO(),
+          year: user.createdAt?.year,
+          month: user.createdAt?.month,
+          day: user.createdAt?.day,
+        },
+        relationships: {
+          userWithNotes: user.toJSON(),
+          noteWithUser: note.toJSON()
         }
       }
     })

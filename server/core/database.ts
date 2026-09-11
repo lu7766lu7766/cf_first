@@ -48,6 +48,11 @@ export class QueryBuilder<T = any> {
     return this
   }
 
+  whereIn(column: string, values: any[]): this {
+    this.options.wheres!.push({ column, operator: 'IN', value: values || [] })
+    return this
+  }
+
   orderBy(column: string, direction: 'asc' | 'desc' | 'ASC' | 'DESC' = 'ASC'): this {
     this.options.orders!.push({ column, direction: direction.toUpperCase() as any })
     return this
@@ -77,6 +82,12 @@ export class QueryBuilder<T = any> {
 
         if (this.options.wheres && this.options.wheres.length > 0) {
           const conditions = this.options.wheres.map((w) => {
+            if (w.operator === 'IN') {
+              const list = Array.isArray(w.value) ? w.value : [w.value]
+              if (list.length === 0) return '1 = 0'
+              bindings.push(...list)
+              return `${w.column} IN (${list.map(() => '?').join(', ')})`
+            }
             bindings.push(w.value)
             return `${w.column} ${w.operator} ?`
           })
@@ -110,6 +121,10 @@ export class QueryBuilder<T = any> {
     if (this.options.wheres && this.options.wheres.length > 0) {
       filtered = filtered.filter((row) => {
         return this.options.wheres!.every((w) => {
+          if (w.operator === 'IN') {
+            const list = Array.isArray(w.value) ? w.value : [w.value]
+            return list.map(String).includes(String(row[w.column]))
+          }
           if (w.operator === '=') return String(row[w.column]) === String(w.value)
           if (w.operator === '!=') return String(row[w.column]) !== String(w.value)
           if (w.operator === '>') return Number(row[w.column]) > Number(w.value)
@@ -148,7 +163,7 @@ export class QueryBuilder<T = any> {
       try {
         const keys = Object.keys(record)
         const placeholders = keys.map(() => '?').join(', ')
-        const values = Object.values(record)
+        const values = Object.values(record).map((v) => (v === undefined ? null : v))
         const sql = `INSERT INTO ${this.options.table} (${keys.join(', ')}) VALUES (${placeholders})`
         const res = await env.DB.prepare(sql).bind(...values).run()
         return { id: res.meta.last_row_id || Date.now(), ...record }
@@ -173,13 +188,13 @@ export class QueryBuilder<T = any> {
     if (env?.DB) {
       try {
         const sets = Object.keys(record).map((k) => `${k} = ?`).join(', ')
-        const values = Object.values(record)
+        const values = Object.values(record).map((v) => (v === undefined ? null : v))
         let sql = `UPDATE ${this.options.table} SET ${sets}`
         const bindings = [...values]
 
         if (this.options.wheres && this.options.wheres.length > 0) {
           const conditions = this.options.wheres.map((w) => {
-            bindings.push(w.value)
+            bindings.push(w.value === undefined ? null : w.value)
             return `${w.column} ${w.operator} ?`
           })
           sql += ` WHERE ${conditions.join(' AND ')}`

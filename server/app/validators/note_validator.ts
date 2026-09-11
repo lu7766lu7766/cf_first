@@ -1,27 +1,29 @@
-import { BaseValidator, field, vine } from '../../core/validator'
+import { BaseValidator, field } from '../../core/validator'
 
 export class CreateNoteValidator extends BaseValidator {
-  static schema = vine.object({
-    title: vine.string().minLength(3),
-    content: vine.string().minLength(5)
+  @field({
+    required: '請輸入筆記標題',
+    minLength: [3, '筆記標題長度至少需 3 個字元']
   })
-
-  @field(vine.string().minLength(3))
   title!: string
 
-  @field(vine.string().minLength(5))
+  @field({
+    required: '請輸入筆記內容',
+    minLength: [5, '筆記內容長度至少需 5 個字元']
+  })
   content!: string
 }
 
 export class UpdateNoteValidator extends BaseValidator {
-  static schema = vine.object({
-    title: vine.string().minLength(3).optional(),
-    content: vine.string().minLength(5).optional()
+  @field({
+    optional: true,
+    minLength: [3, '筆記標題長度至少需 3 個字元']
   })
-
-  @field(vine.string().minLength(3).optional())
   title?: string
 
-  @field(vine.string().minLength(5).optional())
+  @field({
+    optional: true,
+    minLength: [5, '筆記內容長度至少需 5 個字元']
+  })
   content?: string
 }

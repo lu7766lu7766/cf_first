@@ -1,5 +1,6 @@
 import { User } from '../../app/models/user'
 import { Note } from '../../app/models/note'
+import { Hash } from '../../core/hash'
 
 export abstract class BaseSeeder {
   abstract run(): Promise<void>
@@ -9,15 +10,20 @@ export default class MainSeeder extends BaseSeeder {
   async run(): Promise<void> {
     console.log('🌱 開始執行資料庫種子腳本 (Database Seeder)...')
 
-    // 建立預設管理員
-    const existingAdmin = await User.findBy('email', 'admin@example.com')
-    if (!existingAdmin) {
+    // 建立預設管理員 root/root
+    const uCol = User.getUsernameColumn()
+    const existingRoot = await User.findBy(uCol, 'root')
+    if (!existingRoot) {
+      const hashedPassword = await Hash.make('root')
       await User.create({
-        email: 'admin@example.com',
-        password: 'password123',
-        full_name: '系統管理員 (Seeded)'
+        username: 'root',
+        email: 'root@example.com',
+        password: hashedPassword,
+        full_name: '系統管理員 Root'
       })
-      console.log('   ✅ 已建立種子管理員帳號: admin@example.com / password123')
+      console.log('   ✅ 已建立種子管理員帳號: root / root')
+    } else {
+      console.log('   ℹ️ 種子帳號 root 已存在，略過建立。')
     }
 
     // 建立預設筆記
