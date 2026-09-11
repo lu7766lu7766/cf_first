@@ -107,11 +107,13 @@ pnpm ace generate:jwt-secret
 # 一次產出 APP_KEY 與 JWT_SECRET (或使用 pnpm ace generate:key --jwt)
 pnpm ace generate:secrets
 
-# 掃描並執行資料庫遷移
+# 掃描並執行資料庫遷移 (加 --remote 可套用至線上 Cloudflare D1)
 pnpm ace migration:run
+pnpm ace migration:run --remote
 
-# 執行資料庫種子填充腳本
+# 執行資料庫種子填充腳本 (加 --remote 可寫入線上 Cloudflare D1)
 pnpm ace db:seed
+pnpm ace db:seed --remote
 ```
 
 ---
