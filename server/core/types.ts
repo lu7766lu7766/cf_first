@@ -1,6 +1,7 @@
 import type { Context } from 'hono'
 import type { BaseController } from './controller'
 import type { TimeService } from './time'
+import type { AuthManager, UserPayload } from './auth'
 
 export interface Env {
   DB?: D1Database
@@ -50,10 +51,10 @@ export interface AdonisResponse {
   [key: string]: any // Support dynamic Macros
 }
 
-export interface HttpContext {
+export interface HttpContext<TUser = UserPayload> {
   request: AdonisRequest
   response: AdonisResponse
-  auth: any
+  auth: AuthManager<TUser>
   params: Record<string, string>
   env: Env
   rawContext: Context<{ Bindings: Env }>

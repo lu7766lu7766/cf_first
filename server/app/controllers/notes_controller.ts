@@ -28,7 +28,7 @@ export default class NotesController extends BaseController {
     // 透過 VineJS Class 驗證，不符則自動拋出 422 ValidationException
     const payload = await this.validate(CreateNoteValidator, await ctx.request.all())
 
-    const userId = payload.user_id || ctx.auth?.user?.id || 1
+    const userId = payload.user_id ? Number(payload.user_id) : (ctx.auth.user?.id ? Number(ctx.auth.user.id) : 1)
     const note = await this.notesService.createNote({
       ...payload,
       user_id: userId

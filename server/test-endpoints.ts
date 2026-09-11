@@ -8,6 +8,8 @@ import { appConfig } from './config/app'
 import { databaseConfig } from './config/database'
 import { Note } from './app/models/note'
 import { User } from './app/models/user'
+import { createHttpContext } from './core/context'
+import { AuthManager, JwtGuard } from './core/auth'
 
 async function runTests() {
   console.log('🧪 開始執行 AdonisJS 7 API 功能自動化測試...\n')
@@ -455,6 +457,41 @@ async function runTests() {
       data.status === 404 &&
       typeof data.message === 'string',
       '23. GET /api/notes/99999 經由 findOrFail 自動捕獲並返回格式化 E_ROW_NOT_FOUND'
+    )
+  }
+
+  // 24. HttpContext.auth 強型別化與 AuthManager 實例驗證
+  {
+    const mockHonoContext = {
+      req: {
+        method: 'GET',
+        url: 'http://localhost/test',
+        header: () => undefined,
+        param: () => ({}),
+        query: () => ({}),
+        raw: new Request('http://localhost/test')
+      },
+      env: {}
+    } as any
+    const ctx = createHttpContext(mockHonoContext)
+    const isAuthManager = ctx.auth instanceof AuthManager
+    const jwtGuard = ctx.auth.use('jwt')
+    let caughtUnauth = false
+    try {
+      ctx.auth.getUserOrFail()
+    } catch {
+      caughtUnauth = true
+    }
+    ctx.auth.user = { id: 123, email: 'typed@example.com' }
+    const user = ctx.auth.getUserOrFail()
+
+    assert(
+      isAuthManager &&
+      jwtGuard instanceof JwtGuard &&
+      caughtUnauth &&
+      user.id === 123 &&
+      user.email === 'typed@example.com',
+      '24. HttpContext.auth 強型別化 (AuthManager, getUserOrFail, JwtGuard 實例)'
     )
   }
 

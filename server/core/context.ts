@@ -1,5 +1,6 @@
 import type { Context } from 'hono'
 import type { HttpContext, AdonisRequest, AdonisResponse, Env } from './types'
+import { AuthManager } from './auth'
 import { MacroManager } from './macro'
 import { dateTime } from './time'
 import { env } from '../start/env'
@@ -183,7 +184,7 @@ export function createHttpContext(c: Context<{ Bindings: Env }>): HttpContext {
   const httpContext: HttpContext = {
     request,
     response,
-    auth: null, // Initialized by AuthManager or middleware
+    auth: null as any,
     params: c.req.param() as Record<string, string>,
     env: c.env || {},
     rawContext: c,
@@ -191,6 +192,7 @@ export function createHttpContext(c: Context<{ Bindings: Env }>): HttpContext {
     dateTime
   }
 
+  httpContext.auth = new AuthManager(httpContext)
   MacroManager.applyContextMacros(httpContext)
 
   return httpContext

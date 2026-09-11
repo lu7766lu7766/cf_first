@@ -125,7 +125,7 @@ class WebCryptoJwt {
 const memoryTokenStore = new Map<string, UserPayload>()
 
 export class AuthGuard {
-  constructor(protected ctx: HttpContext, protected secret: string) {}
+  constructor(protected ctx: HttpContext<any>, protected secret: string) {}
 
   async authenticate(): Promise<UserPayload> {
     throw new Error('Method not implemented')
@@ -183,12 +183,15 @@ export class TokensGuard extends AuthGuard {
   }
 }
 
-export class AuthManager {
-  private currentGuard = 'jwt'
-  public user: UserPayload | null = null
+export class AuthManager<TUser = UserPayload> {
+  private currentGuard: 'jwt' | 'tokens' = 'jwt'
+  public user: TUser | null = null
 
-  constructor(private ctx: HttpContext) {}
+  constructor(private ctx: HttpContext<TUser>) {}
 
+  use(guardName: 'jwt'): JwtGuard
+  use(guardName: 'tokens'): TokensGuard
+  use(guardName: 'jwt' | 'tokens'): AuthGuard
   use(guardName: 'jwt' | 'tokens'): AuthGuard {
     const secret = this.ctx.env.JWT_SECRET || this.ctx.env.APP_KEY || appConfig.appKey || 'cf-first-super-secret-adonis-jwt-key'
     if (guardName === 'tokens') {
@@ -197,11 +200,21 @@ export class AuthManager {
     return new JwtGuard(this.ctx, secret)
   }
 
-  async authenticate(guardName?: 'jwt' | 'tokens'): Promise<UserPayload> {
-    const guard = this.use(guardName || (this.currentGuard as any))
-    const user = await guard.authenticate()
+  async authenticate(guardName?: 'jwt' | 'tokens'): Promise<TUser> {
+    const guard = this.use(guardName || this.currentGuard)
+    const user = (await guard.authenticate()) as TUser
     this.user = user
     return user
+  }
+
+  /**
+   * 取得已通過驗證的使用者實體，若未驗證則自動拋出 AuthenticationException
+   */
+  getUserOrFail(): TUser {
+    if (!this.user) {
+      throw new AuthenticationException('尚未通過身分驗證或 Token 無效', 'E_UNAUTHORIZED_ACCESS')
+    }
+    return this.user
   }
 
   async check(): Promise<boolean> {
@@ -216,7 +229,7 @@ export class AuthManager {
   async login(user: Authenticatable, guardName: 'jwt' | 'tokens' = 'jwt'): Promise<string> {
     const guard = this.use(guardName)
     const payload = serializeToJson(user)
-    this.user = payload
+    this.user = payload as TUser
     return await guard.generate(payload)
   }
 }
