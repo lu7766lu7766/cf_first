@@ -1,10 +1,9 @@
 import { User } from '../../app/models/user'
 import { Note } from '../../app/models/note'
 import { Hash } from '../../core/hash'
+import { BaseSeeder } from './base_seeder'
 
-export abstract class BaseSeeder {
-  abstract run(): Promise<void>
-}
+export { BaseSeeder }
 
 export default class MainSeeder extends BaseSeeder {
   async run(): Promise<void> {
@@ -12,10 +11,10 @@ export default class MainSeeder extends BaseSeeder {
 
     // 建立預設管理員 root/root
     const uCol = User.getUsernameColumn()
-    const existingRoot = await User.findBy(uCol, 'root')
-    if (!existingRoot) {
+    let rootUser = await User.findBy(uCol, 'root')
+    if (!rootUser) {
       const hashedPassword = await Hash.make('root')
-      await User.create({
+      rootUser = await User.create({
         username: 'root',
         email: 'root@example.com',
         password: hashedPassword,
@@ -26,14 +25,23 @@ export default class MainSeeder extends BaseSeeder {
       console.log('   ℹ️ 種子帳號 root 已存在，略過建立。')
     }
 
-    // 建立預設筆記
-    const notesCount = (await Note.all()).length
-    if (notesCount === 0) {
+    // 建立預設筆記 (綁定 rootUser.id)
+    const allNotes = await Note.all()
+    if (allNotes.length === 0) {
       await Note.create({
+        user_id: rootUser.id,
         title: '【種子筆記 1】探索 AdonisJS 7 開發體驗',
         content: '採用 Class Controller、Active Record 與 VineJS 驗證'
       })
-      console.log('   ✅ 已建立初始展示筆記')
+      console.log('   ✅ 已建立初始展示筆記 (user_id: ' + rootUser.id + ')')
+    } else {
+      for (const note of allNotes) {
+        if (!note.user_id) {
+          note.user_id = rootUser.id
+          await note.save()
+          console.log(`   🔄 已更新現有筆記 #${note.id} 的 user_id 為 ${rootUser.id}`)
+        }
+      }
     }
 
     console.log('🎉 種子資料填充完成！')

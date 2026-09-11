@@ -15,8 +15,8 @@ const memoryDb = new Map<string, Array<Record<string, any>>>()
 
 // 初始化預設假資料
 memoryDb.set('notes', [
-  { id: 1, title: '【歡迎】AdonisJS 7 on Cloudflare Workers', content: '體驗極致邊緣效能與極速 API', created_at: dateTime.now().toISO() },
-  { id: 2, title: '【特性】Active Record & IoC 依賴注入', content: '使用熟悉的 Adonis Class-based 開發風格', created_at: dateTime.now().toISO() }
+  { id: 1, user_id: 1, title: '【歡迎】AdonisJS 7 on Cloudflare Workers', content: '體驗極致邊緣效能與極速 API', created_at: dateTime.now().toISO() },
+  { id: 2, user_id: 1, title: '【特性】Active Record & IoC 依賴注入', content: '使用熟悉的 Adonis Class-based 開發風格', created_at: dateTime.now().toISO() }
 ])
 memoryDb.set('users', [
   { id: 1, email: 'admin@example.com', password: 'password123', full_name: '系統管理員', created_at: dateTime.now().toISO() }

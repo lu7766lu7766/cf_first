@@ -34,8 +34,8 @@ function printHelp() {
   \x1b[1mmigration:run\x1b[0m            執行未套用的 Knex 資料庫遷移 (記錄至 adonis_schema)
   \x1b[1mmigration:rollback\x1b[0m       回滾上一批次 (Batch) 的資料庫遷移
   \x1b[1mmigration:status\x1b[0m         查看所有遷移檔案的套用狀態與批次
-  \x1b[1mmigration:fresh\x1b[0m          重置資料庫並重新執行所有遷移 (可加 --seed)
-  \x1b[1mdb:seed\x1b[0m                  執行資料庫種子腳本 (可加 --remote)
+  \x1b[1mmigration:fresh\x1b[0m          重置資料庫並重新執行所有遷移 (可加 --seed [-f <name>])
+  \x1b[1mdb:seed [-f <name>]\x1b[0m       執行資料庫種子腳本 (支援 -f/--files 指定檔案或全目錄執行，可加 --remote)
   \x1b[1mdb:pull\x1b[0m                  從線上 Cloudflare D1 拉取最新資料並同步至本機 SQLite
   \x1b[1mdb:path\x1b[0m                  查看本機 D1 SQLite 實體路徑與 tmp/db.sqlite 狀態
 `)
@@ -267,6 +267,219 @@ CREATE TABLE IF NOT EXISTS adonis_schema (
   }
 }
 
+function escapeSqlValue(v: any): string {
+  if (v === null || v === undefined) return 'NULL'
+  if (typeof v === 'number') return String(v)
+  if (typeof v === 'boolean') return v ? '1' : '0'
+  if (typeof v === 'string') return `'${v.replace(/'/g, "''")}'`
+  if (v instanceof Date) return `'${v.toISOString()}'`
+  if (typeof v === 'object') return `'${JSON.stringify(v).replace(/'/g, "''")}'`
+  return `'${String(v).replace(/'/g, "''")}'`
+}
+
+function interpolateSql(sql: string, bindings: any[] = []): string {
+  let idx = 0
+  return sql.replace(/\?/g, () => {
+    if (idx < bindings.length) {
+      return escapeSqlValue(bindings[idx++])
+    }
+    return 'NULL'
+  })
+}
+
+/**
+ * 為 CLI 環境注入 D1 Database 驅動適配器，使 Seeder 內的 Model 與 QueryBuilder 直接操作實體 D1
+ */
+async function initCliDatabaseEnv(isRemote: boolean): Promise<void> {
+  const localFile = findLocalSqlitePath()
+
+  const executeQuery = (sql: string, bindings: any[] = []): any[] => {
+    const finalSql = interpolateSql(sql, bindings)
+    if (!isRemote && localFile && fs.existsSync(localFile)) {
+      try {
+        const out = execSync(`sqlite3 "${localFile}" -json "${finalSql.replace(/"/g, '\\"')}"`, {
+          encoding: 'utf-8',
+          stdio: 'pipe'
+        })
+        return out.trim() ? JSON.parse(out) : []
+      } catch {}
+    }
+    return queryD1Json(finalSql)
+  }
+
+  const executeRun = (sql: string, bindings: any[] = []): { changes: number; last_row_id: number } => {
+    const finalSql = interpolateSql(sql, bindings)
+    let lastRowId = 0
+    let changes = 0
+
+    if (!isRemote && localFile && fs.existsSync(localFile)) {
+      try {
+        const fullSql = `${finalSql};\nSELECT changes() as changes, last_insert_rowid() as last_row_id;`
+        const tempFile = path.join(__dirname, `temp_${Date.now()}_${Math.random().toString(36).slice(2)}.sql`)
+        fs.writeFileSync(tempFile, fullSql, 'utf-8')
+        try {
+          const out = execSync(`sqlite3 "${localFile}" -json < "${tempFile}"`, {
+            encoding: 'utf-8',
+            stdio: 'pipe'
+          })
+          const res = out.trim() ? JSON.parse(out) : []
+          const meta = res[res.length - 1] || {}
+          changes = meta.changes || 0
+          lastRowId = meta.last_row_id || 0
+          return { changes, last_row_id: lastRowId }
+        } finally {
+          if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile)
+        }
+      } catch {}
+    }
+
+    runD1Sql(finalSql)
+    const lastIdRes = queryD1Json<{ id: number }>('SELECT last_insert_rowid() as id;')
+    lastRowId = lastIdRes[0]?.id || 0
+    return { changes: 1, last_row_id: lastRowId }
+  }
+
+  const cliD1Binding = {
+    prepare(sql: string) {
+      let boundValues: any[] = []
+      return {
+        bind(...values: any[]) {
+          boundValues = values
+          return this
+        },
+        async all<T = any>() {
+          const results = executeQuery(sql, boundValues)
+          return { results }
+        },
+        async run() {
+          const meta = executeRun(sql, boundValues)
+          return { meta }
+        }
+      }
+    }
+  }
+
+  const { Database } = await import('./core/database')
+  Database.setEnv({ DB: cliD1Binding } as any)
+}
+
+/**
+ * 解析命令列中的 -f 或 --file/--files 參數
+ */
+function parseFileFlag(argsList: string[]): string | null {
+  for (let i = 0; i < argsList.length; i++) {
+    const arg = argsList[i]
+    if (arg === '-f' || arg === '--file' || arg === '--files') {
+      if (i + 1 < argsList.length && !argsList[i + 1].startsWith('-')) {
+        return argsList[i + 1]
+      }
+    } else if (arg.startsWith('-f=')) {
+      return arg.slice(3)
+    } else if (arg.startsWith('--file=')) {
+      return arg.slice(7)
+    } else if (arg.startsWith('--files=')) {
+      return arg.slice(8)
+    }
+  }
+  return null
+}
+
+/**
+ * 動態載入並執行 Seeder 檔案（支援 -f 智慧指定與全目錄自然排序執行）
+ */
+async function runSeeders(specifiedFile: string | null = null): Promise<void> {
+  const seedersDir = path.join(__dirname, 'database/seeders')
+  if (!fs.existsSync(seedersDir)) {
+    console.log('⚠️ 未找到 database/seeders 目錄。')
+    return
+  }
+
+  const allFiles = fs
+    .readdirSync(seedersDir)
+    .filter((f) => f.endsWith('.ts') && !f.toLowerCase().startsWith('base_') && !f.endsWith('.d.ts'))
+
+  if (allFiles.length === 0) {
+    console.log('⚠️ database/seeders 目錄下沒有任何可執行的 Seeder 檔案。')
+    return
+  }
+
+  let filesToRun: string[] = []
+  if (specifiedFile) {
+    const cleanTarget = path.basename(specifiedFile).replace(/\.ts$/, '').toLowerCase()
+
+    const exactMatch = allFiles.find(
+      (f) => f.replace(/\.ts$/, '').toLowerCase() === cleanTarget || f.toLowerCase() === specifiedFile.toLowerCase()
+    )
+
+    const fuzzyMatch = exactMatch || allFiles.find((f) => {
+      const fBase = f.replace(/\.ts$/, '').toLowerCase()
+      return fBase.includes(cleanTarget) || fBase.replace(/_seeder$/, '') === cleanTarget
+    })
+
+    if (!fuzzyMatch) {
+      console.error(`\x1b[31m❌ 找不到指定的 Seeder 檔案: "${specifiedFile}"\x1b[0m`)
+      console.log(`\x1b[33m💡 目前 database/seeders 目錄中可用的 Seeder 清單:\x1b[0m`)
+      allFiles.forEach((f) => {
+        const alias = f.replace(/_seeder\.ts$/, '').replace(/\.ts$/, '')
+        console.log(`   - \x1b[1m${f}\x1b[0m (可使用: pnpm ace db:seed -f ${alias})`)
+      })
+      return
+    }
+
+    filesToRun = [fuzzyMatch]
+  } else {
+    filesToRun = [...allFiles].sort((a, b) =>
+      a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
+    )
+  }
+
+  console.log(`🌱 載入種子檔案並執行 (${isRemote ? '遠端 Cloudflare D1' : '本機 D1 SQLite'})...`)
+  console.log(`📦 待執行 Seeder: ${filesToRun.join(', ')}\n`)
+
+  await initCliDatabaseEnv(isRemote)
+
+  let successCount = 0
+  for (const file of filesToRun) {
+    const filePath = path.join(seedersDir, file)
+    console.log(`   \x1b[36m▶ [SEEDING]\x1b[0m ${file}...`)
+    const startTime = Date.now()
+
+    try {
+      const seederModule = await import(filePath)
+      const SeederClass = seederModule.default
+
+      if (typeof SeederClass !== 'function') {
+        console.warn(`   \x1b[33m⚠️ ${file} 沒有 default export 類別，已略過。\x1b[0m`)
+        continue
+      }
+
+      const seederInstance = new SeederClass()
+      if (typeof seederInstance.run !== 'function') {
+        console.warn(`   \x1b[33m⚠️ ${file} 的 default class 未實作 run() 方法，已略過。\x1b[0m`)
+        continue
+      }
+
+      await seederInstance.run()
+      const elapsed = Date.now() - startTime
+      console.log(`   \x1b[32m✔ [COMPLETED]\x1b[0m ${file} (${elapsed}ms)\n`)
+      successCount++
+    } catch (err) {
+      console.error(`   \x1b[31m❌ [FAILED]\x1b[0m 執行 ${file} 失敗:`, err)
+      break
+    }
+  }
+
+  if (successCount === filesToRun.length) {
+    console.log(`\x1b[32m🎉 所有指定的資料庫種子資料已成功注入完成 (共 ${successCount} 個檔案)！\x1b[0m`)
+  } else {
+    console.log(`\x1b[33m⚠️ 部分種子腳本執行未全數成功 (${successCount}/${filesToRun.length})\x1b[0m`)
+  }
+
+  if (!isRemote) {
+    ensureDbSymlink()
+  }
+}
+
 async function run() {
   if (!command || command === '--help' || command === '-h' || command === 'list') {
     printHelp()
@@ -437,7 +650,7 @@ export default class extends BaseSchema {
       ensureDir(dir)
       const filePath = path.join(dir, fileName)
 
-      const content = `import { BaseSeeder } from './main_seeder'
+      const content = `import { BaseSeeder } from './base_seeder'
 
 export default class ${className} extends BaseSeeder {
   async run(): Promise<void> {
@@ -623,16 +836,8 @@ export default class ${className} extends BaseSeeder {
 
       if (args.includes('--seed')) {
         console.log('\n🌱 自動執行種子腳本 (--seed)...')
-        const { Hash } = await import('./core/hash')
-        const hashedRoot = await Hash.make('root')
-        const seedSql = `INSERT OR REPLACE INTO users (id, username, email, password, full_name, created_at, updated_at) VALUES (1, 'root', 'root@example.com', '${hashedRoot}', '系統管理員 Root', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);`
-        runD1Sql(seedSql)
-
-        const seederModule = await import('./database/seeders/main_seeder')
-        const SeederClass = seederModule.default
-        const seeder = new SeederClass()
-        await seeder.run()
-        console.log('\x1b[32m✔ 種子資料注入完成！\x1b[0m')
+        const specifiedFile = parseFileFlag(args)
+        await runSeeders(specifiedFile)
       }
       break
     }
@@ -660,25 +865,8 @@ export default class ${className} extends BaseSeeder {
     }
 
     case 'db:seed': {
-      console.log(`🌱 載入種子檔案並執行 (${isRemote ? '遠端 Cloudflare D1' : '本機 D1 SQLite'})...`)
-      try {
-        const { Hash } = await import('./core/hash')
-        const hashedRoot = await Hash.make('root')
-        const seedSql = `
-INSERT OR REPLACE INTO users (id, username, email, password, full_name, created_at, updated_at) 
-VALUES (1, 'root', 'root@example.com', '${hashedRoot}', '系統管理員 Root', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-
-INSERT OR IGNORE INTO notes (id, title, content, created_at, updated_at) 
-VALUES (1, '【種子筆記 1】探索 AdonisJS 7 開發體驗', '採用 Class Controller、Active Record 與 VineJS 驗證', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-`
-        console.log(`   \x1b[36m▶ [SEED]\x1b[0m 寫入初始種子資料至 ${isRemote ? '遠端 Cloudflare D1' : '本機 D1 SQLite'}...`)
-        runD1Sql(seedSql)
-
-        console.log('\x1b[32m✔ 種子資料注入完成！\x1b[0m')
-        if (!isRemote) ensureDbSymlink()
-      } catch (e) {
-        console.error('❌ 種子執行失敗:', e)
-      }
+      const specifiedFile = parseFileFlag(args)
+      await runSeeders(specifiedFile)
       break
     }
 

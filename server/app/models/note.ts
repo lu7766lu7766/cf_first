@@ -8,7 +8,7 @@ export class Note extends BaseModel {
   static primaryKey = 'id'
 
   declare id: number
-  declare user_id: number | null
+  declare user_id: number
   declare title: string
   declare content: string
 

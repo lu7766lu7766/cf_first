@@ -12,8 +12,12 @@ export class NotesService {
     return await Note.find(id)
   }
 
-  async createNote(data: { title: string; content: string }): Promise<Note> {
-    return await Note.create(data)
+  async createNote(data: { title: string; content: string; user_id?: number }): Promise<Note> {
+    return await Note.create({
+      user_id: data.user_id || 1,
+      title: data.title,
+      content: data.content
+    })
   }
 
   /**
@@ -23,12 +27,14 @@ export class NotesService {
     return await Database.transaction(async (trx) => {
       // 1. 在事務中建立第一筆記錄
       const firstNote = await trx.from('notes').insert({
+        user_id: 1,
         title: '事務測試紀錄 A',
         content: '第一筆成功寫入'
       })
 
       // 2. 在事務中建立第二筆記錄
       const secondNote = await trx.from('notes').insert({
+        user_id: 1,
         title: '事務測試紀錄 B',
         content: '第二筆成功寫入'
       })
