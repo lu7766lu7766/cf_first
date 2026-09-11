@@ -16,11 +16,11 @@ export default class NotesController extends BaseController {
 
   async index() {
     const notes = await this.notesService.getAllNotes()
-    // 直接返回資料物件
+    // 直接返回資料物件（由核心層與 ApiFormatMiddleware 自動遞迴序列化）
     return {
       success: true,
       total: notes.length,
-      data: notes.map((n: any) => n.toJSON())
+      data: notes
     }
   }
 
@@ -37,7 +37,7 @@ export default class NotesController extends BaseController {
     // 直接返回新增筆記資料
     return {
       message: '筆記建立成功 (透過 Model Active Record)',
-      data: note.toJSON()
+      data: note
     }
   }
 
@@ -50,7 +50,7 @@ export default class NotesController extends BaseController {
     // 直接返回查詢結果
     return {
       success: true,
-      data: note.toJSON()
+      data: note
     }
   }
 
@@ -68,7 +68,7 @@ export default class NotesController extends BaseController {
     // 直接返回更新結果
     return {
       message: '筆記更新成功',
-      data: note.toJSON()
+      data: note
     }
   }
 

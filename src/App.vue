@@ -16,6 +16,20 @@ const token = ref<string>('')
 const loadingAction = ref<string | null>(null)
 const isCopied = ref(false)
 
+const tokenInfo = computed(() => {
+  if (!token.value) return null
+  try {
+    const parts = token.value.split('.')
+    if (parts.length === 3) {
+      const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')))
+      return payload
+    }
+  } catch {
+    return null
+  }
+  return null
+})
+
 const authForm = ref({
   username: 'root',
   password: 'root'
@@ -183,6 +197,21 @@ const testAuthMe = () => runApi('authMe', async () => {
   }
 })
 
+// 4.1 取得使用者列表 (需要 JWT Auth Guard)
+const testGetUsers = () => runApi('getUsers', async () => {
+  try {
+    const headers: Record<string, string> = {}
+    if (token.value) {
+      headers['Authorization'] = `Bearer ${token.value}`
+    }
+    const res = await fetch('/api/users', { headers })
+    const data = await res.json()
+    logResult('/api/users', 'GET', res.status, data)
+  } catch (e) {
+    logResult('/api/users', 'GET', 500, String(e), true)
+  }
+})
+
 // 5. 取得 Notes 列表 (Model Active Record)
 const testGetNotes = () => runApi('getNotes', async () => {
   try {
@@ -308,6 +337,9 @@ const testRelation = () => runApi('relation', async () => {
           <div class="token-status">
             <span class="token-dot" :class="{ active: !!token }"></span>
             <span class="token-label">{{ token ? '已取得存取 Token' : '未登入 (未附加 Token)' }}</span>
+            <span v-if="tokenInfo?.jti" class="token-jti-badge font-mono" title="RFC 7519 每次登入簽發之唯一 UUID">
+              jti: {{ tokenInfo.jti.substring(0, 8) }}...
+            </span>
           </div>
           <div v-if="token" class="token-actions">
             <button class="btn-chip" @click="copyToken" title="複製 Token">複製</button>
@@ -316,7 +348,7 @@ const testRelation = () => runApi('relation', async () => {
         </div>
         <div class="token-value-box">
           <span class="token-key font-mono">Bearer</span>
-          <code class="token-text font-mono" :title="token || '尚未登入'">{{ token ? token.substring(0, 36) + '...' : '(執行註冊或登入以取得 JWT Token)' }}</code>
+          <code class="token-text font-mono" :title="token || '尚未登入'">{{ token ? `${token.substring(0, 18)}...${token.substring(token.length - 12)}` : '(執行註冊或登入以取得 JWT Token)' }}</code>
         </div>
       </div>
     </header>
@@ -407,6 +439,19 @@ const testRelation = () => runApi('relation', async () => {
             <div class="btn-path font-mono">/api/auth/me</div>
             <div class="btn-desc">需 Bearer JWT，由 SQLite 撈取使用者真實資料</div>
           </button>
+
+          <button
+            class="api-action-btn"
+            :class="{ loading: loadingAction === 'getUsers' }"
+            @click="testGetUsers"
+          >
+            <div class="btn-top">
+              <span class="badge-method get">GET</span>
+              <span class="btn-number font-mono">#04b</span>
+            </div>
+            <div class="btn-path font-mono">/api/users</div>
+            <div class="btn-desc">需 Bearer JWT，查詢所有使用者列表</div>
+          </button>
         </div>
       </section>
 
@@ -427,7 +472,7 @@ const testRelation = () => runApi('relation', async () => {
               <span class="btn-number font-mono">#05</span>
             </div>
             <div class="btn-path font-mono">/api/notes</div>
-            <div class="btn-desc">查詢筆記列表 (Active Record)</div>
+            <div class="btn-desc">查詢筆記列表 (預載入 belongsTo user 關聯)</div>
           </button>
 
           <button
@@ -685,6 +730,16 @@ const testRelation = () => runApi('relation', async () => {
   font-size: 0.8rem;
   font-weight: 600;
   color: var(--text-secondary);
+}
+
+.token-jti-badge {
+  font-size: 0.7rem;
+  background: rgba(99, 102, 241, 0.15);
+  color: #a5b4fc;
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  padding: 1px 7px;
+  border-radius: 9999px;
+  font-weight: 500;
 }
 
 .token-dot {

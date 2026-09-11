@@ -2,6 +2,7 @@ import { router } from "../core/router"
 import { HttpException } from "../core/exception_handler"
 import AuthController from "../app/controllers/auth_controller"
 import NotesController from "../app/controllers/notes_controller"
+import UsersController from "../app/controllers/users_controller"
 import { middleware } from "./kernel"
 import { dateTime, DateTime } from "../core/time"
 import { appConfig } from "../config/app"
@@ -40,6 +41,9 @@ router
 
     // 4. Notes 資源路由 (/api/notes)
     router.resource("notes", NotesController)
+
+    // 4.1 使用者列表路由 (/api/users，需要 JWT Auth)
+    router.get("/users", [UsersController, "index"]).use([middleware.auth("jwt")])
 
     // 5. Response Macro 測試路由 (/api/macro-test)
     router.get("/macro-test", (ctx) => {

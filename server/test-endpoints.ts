@@ -59,9 +59,11 @@ async function runTests() {
     )
   }
 
-  // 3. POST /api/auth/login
+  // 3. POST /api/auth/login (驗證 JWT 簽發與 RFC 7519 jti 唯一性)
+  let loginToken1 = ''
+  let loginToken2 = ''
   {
-    const res = await app.request('/api/auth/login', {
+    const res1 = await app.request('/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -69,13 +71,35 @@ async function runTests() {
         password: 'securePassword123'
       })
     })
-    const data = await res.json<any>()
+    const data1 = await res1.json<any>()
+    loginToken1 = data1.data?.token || ''
+
+    // 再次登入，驗證即使同一帳號連續登入，每次也會因 jti (UUID) 簽發相異的唯一 Token
+    const res2 = await app.request('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: 'test_user@example.com',
+        password: 'securePassword123'
+      })
+    })
+    const data2 = await res2.json<any>()
+    loginToken2 = data2.data?.token || ''
+
+    const payload1 = JSON.parse(Buffer.from(loginToken1.split('.')[1], 'base64').toString())
+    const payload2 = JSON.parse(Buffer.from(loginToken2.split('.')[1], 'base64').toString())
+
     assert(
-      res.status === 200 &&
-      Array.isArray(data.code) &&
-      data.code[0] === 0 &&
-      !!data.data?.token,
-      '3. 登入取得 Token POST /api/auth/login'
+      res1.status === 200 &&
+      Array.isArray(data1.code) &&
+      data1.code[0] === 0 &&
+      !!loginToken1 &&
+      !!loginToken2 &&
+      loginToken1 !== loginToken2 &&
+      typeof payload1.jti === 'string' &&
+      typeof payload2.jti === 'string' &&
+      payload1.jti !== payload2.jti,
+      '3. 登入取得 Token POST /api/auth/login (驗證每次簽發唯一 jti 與相異 Token)'
     )
   }
 
@@ -105,16 +129,47 @@ async function runTests() {
     )
   }
 
-  // 5. GET /api/notes (Model Query)
+  // 4.1 GET /api/users (需要 JWT Auth)
+  {
+    // 未攜帶 Token 應被攔截 (401)
+    const resUnauth = await app.request('/api/users')
+    const dataUnauth = await resUnauth.json<any>()
+    assert(
+      resUnauth.status === 200 &&
+      (dataUnauth.status === 401 || dataUnauth.code === 'E_UNAUTHORIZED_ACCESS'),
+      '4.1a. GET /api/users 未提供 Token 攔截 (401 異常)'
+    )
+
+    // 攜帶 Token 應成功回傳使用者清單，且敏感欄位 (password) 自動排除
+    const resAuth = await app.request('/api/users', {
+      headers: { Authorization: `Bearer ${userToken}` }
+    })
+    const dataAuth = await resAuth.json<any>()
+    const users = Array.isArray(dataAuth.data) ? dataAuth.data : (dataAuth.data?.data || [])
+    assert(
+      resAuth.status === 200 &&
+      Array.isArray(dataAuth.code) &&
+      dataAuth.code[0] === 0 &&
+      Array.isArray(users) &&
+      users.length > 0 &&
+      users[0].password === undefined,
+      '4.1b. GET /api/users 授權存取成功取得使用者列表 (密碼自動排除)'
+    )
+  }
+
+  // 5. GET /api/notes (Model Query with belongsTo user preloading)
   {
     const res = await app.request('/api/notes')
     const data = await res.json<any>()
+    const notes = data.data?.data || []
+    const firstNote = notes[0]
     assert(
       res.status === 200 &&
       Array.isArray(data.code) &&
       data.code[0] === 0 &&
-      Array.isArray(data.data?.data),
-      '5. 筆記清單查詢 GET /api/notes (Model Active Record)'
+      Array.isArray(notes) &&
+      (!firstNote || (firstNote.user !== undefined && firstNote.user?.password === undefined)),
+      '5. 筆記清單查詢 GET /api/notes (預載入 belongsTo user 且排除密碼)'
     )
   }
 

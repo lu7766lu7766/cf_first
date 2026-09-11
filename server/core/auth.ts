@@ -70,7 +70,12 @@ class WebCryptoJwt {
   static async sign(payload: any, secret: string, expiresInSeconds = 86400): Promise<string> {
     const header = { alg: 'HS256', typ: 'JWT' }
     const now = Math.floor(Date.now() / 1000)
-    const fullPayload = { ...payload, iat: now, exp: now + expiresInSeconds }
+    const fullPayload = {
+      ...payload,
+      jti: payload.jti || crypto.randomUUID(),
+      iat: now,
+      exp: now + expiresInSeconds
+    }
 
     const encodedHeader = this.base64UrlEncode(JSON.stringify(header))
     const encodedPayload = this.base64UrlEncode(JSON.stringify(fullPayload))
