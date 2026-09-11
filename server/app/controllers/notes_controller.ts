@@ -44,9 +44,6 @@ export default class NotesController extends BaseController {
   async show(ctx: HttpContext) {
     const id = ctx.params.id
     const note = await this.notesService.findNoteById(id)
-    if (!note) {
-      throw new HttpException(`找不到 ID 為 ${id} 的筆記`, 404, 'E_ROW_NOT_FOUND')
-    }
     // 直接返回查詢結果
     return {
       success: true,
@@ -57,9 +54,6 @@ export default class NotesController extends BaseController {
   async update(ctx: HttpContext) {
     const id = ctx.params.id
     const note = await this.notesService.findNoteById(id)
-    if (!note) {
-      throw new HttpException(`找不到 ID 為 ${id} 的筆記`, 404, 'E_ROW_NOT_FOUND')
-    }
 
     const payload = await this.validate(UpdateNoteValidator, await ctx.request.all())
     Object.assign(note, payload)
@@ -75,9 +69,6 @@ export default class NotesController extends BaseController {
   async destroy(ctx: HttpContext) {
     const id = ctx.params.id
     const note = await this.notesService.findNoteById(id)
-    if (!note) {
-      throw new HttpException(`找不到 ID 為 ${id} 的筆記`, 404, 'E_ROW_NOT_FOUND')
-    }
 
     await note.delete()
     // 直接返回刪除訊息

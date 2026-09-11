@@ -8,11 +8,9 @@ export class NotesService {
     return await Note.query().preload("user")
   }
 
-  async findNoteById(id: number | string): Promise<Note | null> {
-    const note = await Note.find(id)
-    if (note) {
-      await note.load("user")
-    }
+  async findNoteById(id: number | string): Promise<Note> {
+    const note = await Note.findOrFail(id)
+    await note.load("user")
     return note
   }
 

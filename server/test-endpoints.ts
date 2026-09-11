@@ -427,6 +427,37 @@ async function runTests() {
     )
   }
 
+  // 22. Model.findOrFail 與 firstOrFail 異常拋出測試
+  {
+    const note = await Note.findOrFail(1)
+    let caughtNotFound = false
+    try {
+      await Note.findOrFail(99999)
+    } catch (err: any) {
+      if (err.status === 404 && err.code === 'E_ROW_NOT_FOUND') {
+        caughtNotFound = true
+      }
+    }
+    assert(
+      note instanceof Note &&
+      note.id === 1 &&
+      caughtNotFound,
+      '22. Note.findOrFail(id) 成功取得實例，查無資料時拋出 404 (E_ROW_NOT_FOUND)'
+    )
+  }
+
+  // 23. GET /api/notes/99999 (findOrFail 404 整合端點驗證)
+  {
+    const res = await app.request('/api/notes/99999')
+    const data = await res.json<any>()
+    assert(
+      data.code === 'E_ROW_NOT_FOUND' &&
+      data.status === 404 &&
+      typeof data.message === 'string',
+      '23. GET /api/notes/99999 經由 findOrFail 自動捕獲並返回格式化 E_ROW_NOT_FOUND'
+    )
+  }
+
   console.log(`\n測試總結: ${passed} 通過, ${failed} 失敗`)
   if (failed > 0) {
     process.exit(1)
