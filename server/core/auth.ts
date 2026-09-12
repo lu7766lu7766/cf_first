@@ -161,9 +161,26 @@ export class JwtGuard extends AuthGuard {
   }
 }
 
+interface TokenMemoryCacheEntry {
+  tokenRecord: any
+  safeUser: UserPayload
+  cachedAt: number
+}
+
 export class TokensGuard extends AuthGuard {
   public currentAccessToken: any = null
   public rawToken: string | null = null
+
+  // Worker 實例級短期記憶體快取 (TTL 30 秒)
+  private static tokenMemoryCache = new Map<string, TokenMemoryCacheEntry>()
+
+  static clearCache(hash?: string) {
+    if (hash) {
+      TokensGuard.tokenMemoryCache.delete(hash)
+    } else {
+      TokensGuard.tokenMemoryCache.clear()
+    }
+  }
 
   private static async hashToken(token: string): Promise<string> {
     const enc = new TextEncoder()
@@ -173,6 +190,29 @@ export class TokensGuard extends AuthGuard {
 
   private isSsoEnabled(): boolean {
     return authConfig.ssoEnabled
+  }
+
+  private triggerLastUsedUpdate(tokenRecord: any) {
+    const now = Date.now()
+    const lastUsedMs = tokenRecord.last_used_at ? new Date(tokenRecord.last_used_at).getTime() : 0
+    // 寫入節流：距離上次更新超過 60 秒才更新資料庫，大幅降低 D1 寫入次數
+    if (now - lastUsedMs > 60_000) {
+      tokenRecord.last_used_at = dateTime.now().toISO()
+      const updatePromise = Database.from('auth_access_tokens')
+        .where('id', tokenRecord.id)
+        .update({ last_used_at: tokenRecord.last_used_at })
+        .catch((err) => console.warn('[Auth] 背景更新 last_used_at 異常:', err))
+
+      // 利用 Cloudflare Workers executionCtx.waitUntil 在背景非同步執行寫入，不阻塞當前 HTTP 回應
+      try {
+        const executionCtx = (this.ctx.rawContext as any)?.executionCtx
+        if (executionCtx && typeof executionCtx.waitUntil === 'function') {
+          executionCtx.waitUntil(updatePromise)
+        }
+      } catch {
+        // Node / 單元測試環境無 ExecutionContext，直接略過
+      }
+    }
   }
 
   async authenticate(): Promise<UserPayload> {
@@ -188,31 +228,97 @@ export class TokensGuard extends AuthGuard {
 
     const hash = await TokensGuard.hashToken(token)
 
+    // 1. 優先檢查記憶體快取 (TTL 30 秒)，命中時直接 0ms 本地返回
+    const cached = TokensGuard.tokenMemoryCache.get(hash)
+    const now = Date.now()
+    if (cached && now - cached.cachedAt < 30_000) {
+      if (cached.tokenRecord.expires_at) {
+        const exp = dateTime.fromISO(cached.tokenRecord.expires_at)
+        if (exp.isValid && exp.toMillis() < now) {
+          TokensGuard.tokenMemoryCache.delete(hash)
+          throw new AuthenticationException('存取權杖已過期，請重新登入', 'E_TOKEN_EXPIRED')
+        }
+      }
+
+      this.currentAccessToken = cached.tokenRecord
+      this.rawToken = token
+      this.triggerLastUsedUpdate(cached.tokenRecord)
+      return cached.safeUser
+    }
+
     if (this.ctx.env) {
       Database.setEnv(this.ctx.env)
     }
 
-    const tokenRecord = await Database.from('auth_access_tokens').where('hash', hash).first()
-    if (!tokenRecord) {
-      throw new AuthenticationException('存取權杖不存在或已被註銷 (Token revoked or not found)', 'E_UNAUTHORIZED')
+    let tokenRecord: any = null
+    let safeUser: UserPayload | null = null
+
+    // 2. 若連接 Cloudflare D1，執行高效單次 SQL JOIN 查詢 (auth_access_tokens JOIN users)
+    if (this.ctx.env?.DB) {
+      const query = `
+        SELECT 
+          t.id, t.tokenable_id, t.type, t.name, t.hash, t.abilities, t.last_used_at, t.expires_at, t.created_at, t.updated_at,
+          u.id AS u_id, u.username AS u_username, u.email AS u_email, u.full_name AS u_full_name, u.created_at AS u_created_at, u.updated_at AS u_updated_at
+        FROM auth_access_tokens t
+        JOIN users u ON t.tokenable_id = u.id
+        WHERE t.hash = ?
+        LIMIT 1
+      `
+      const row = await this.ctx.env.DB.prepare(query).bind(hash).first<any>()
+      if (!row) {
+        TokensGuard.tokenMemoryCache.delete(hash)
+        throw new AuthenticationException('存取權杖不存在或已被註銷 (Token revoked or not found)', 'E_UNAUTHORIZED')
+      }
+
+      tokenRecord = {
+        id: row.id,
+        tokenable_id: row.tokenable_id,
+        type: row.type,
+        name: row.name,
+        hash: row.hash,
+        abilities: row.abilities,
+        last_used_at: row.last_used_at,
+        expires_at: row.expires_at,
+        created_at: row.created_at,
+        updated_at: row.updated_at
+      }
+
+      safeUser = {
+        id: row.u_id,
+        username: row.u_username,
+        email: row.u_email,
+        full_name: row.u_full_name,
+        created_at: row.u_created_at,
+        updated_at: row.u_updated_at
+      }
+    } else {
+      // 記憶體資料庫 fallback
+      tokenRecord = await Database.from('auth_access_tokens').where('hash', hash).first()
+      if (!tokenRecord) {
+        TokensGuard.tokenMemoryCache.delete(hash)
+        throw new AuthenticationException('存取權杖不存在或已被註銷 (Token revoked or not found)', 'E_UNAUTHORIZED')
+      }
+
+      const user = await Database.from('users').where('id', tokenRecord.tokenable_id).first()
+      if (!user) {
+        throw new AuthenticationException('查無此權杖對應之使用者帳號', 'E_USER_NOT_FOUND')
+      }
+
+      const { password, ...extractedSafeUser } = user
+      safeUser = extractedSafeUser as UserPayload
     }
 
     // 檢查有效期限
     if (tokenRecord.expires_at) {
       const exp = dateTime.fromISO(tokenRecord.expires_at)
       if (exp.isValid && exp.toMillis() < Date.now()) {
+        TokensGuard.tokenMemoryCache.delete(hash)
         await Database.from('auth_access_tokens').where('id', tokenRecord.id).delete()
         throw new AuthenticationException('存取權杖已過期，請重新登入', 'E_TOKEN_EXPIRED')
       }
     }
 
-    // 查驗對應的使用者帳號
-    const user = await Database.from('users').where('id', tokenRecord.tokenable_id).first()
-    if (!user) {
-      throw new AuthenticationException('查無此權杖對應之使用者帳號', 'E_USER_NOT_FOUND')
-    }
-
-    // SSO 單一連線管制：只要該 Token 發出請求驗證通過，立即自動註銷該使用者的其他所有歷史 Token
+    // SSO 單一連線管制
     if (this.isSsoEnabled()) {
       await Database.from('auth_access_tokens')
         .where('tokenable_id', tokenRecord.tokenable_id)
@@ -220,16 +326,20 @@ export class TokensGuard extends AuthGuard {
         .delete()
     }
 
-    // 更新最後使用時間戳
-    await Database.from('auth_access_tokens')
-      .where('id', tokenRecord.id)
-      .update({ last_used_at: dateTime.now().toISO() })
-
+    // 儲存至實例與記憶體快取
     this.currentAccessToken = tokenRecord
     this.rawToken = token
 
-    const { password, ...safeUser } = user
-    return safeUser as UserPayload
+    TokensGuard.tokenMemoryCache.set(hash, {
+      tokenRecord,
+      safeUser: safeUser!,
+      cachedAt: Date.now()
+    })
+
+    // 非同步背景節流更新 last_used_at
+    this.triggerLastUsedUpdate(tokenRecord)
+
+    return safeUser!
   }
 
   async generate(user: Authenticatable, name = 'OAT Access Token'): Promise<string> {
@@ -273,15 +383,20 @@ export class TokensGuard extends AuthGuard {
     }
 
     if (all) {
+      TokensGuard.tokenMemoryCache.clear()
       const userId = this.currentAccessToken?.tokenable_id || (this.ctx.auth.user as any)?.id
       if (userId) {
         await Database.from('auth_access_tokens').where('tokenable_id', userId).delete()
       }
     } else {
       if (this.currentAccessToken?.id) {
+        if (this.currentAccessToken.hash) {
+          TokensGuard.tokenMemoryCache.delete(this.currentAccessToken.hash)
+        }
         await Database.from('auth_access_tokens').where('id', this.currentAccessToken.id).delete()
       } else if (this.rawToken) {
         const hash = await TokensGuard.hashToken(this.rawToken)
+        TokensGuard.tokenMemoryCache.delete(hash)
         await Database.from('auth_access_tokens').where('hash', hash).delete()
       }
     }
