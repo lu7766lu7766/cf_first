@@ -3,23 +3,16 @@
   "name": "cf-first",
   "main": "server/index.ts",
   "compatibility_date": "2024-11-01",
-  "compatibility_flags": [
-    "nodejs_compat"
-  ],
+  "compatibility_flags": ["nodejs_compat"],
   "assets": {
     "directory": "./dist",
-    "not_found_handling": "single-page-application"
-  },
-  "vars": {
-    "TZ": "Asia/Taipei",
-    "NODE_ENV": "development",
-    "DB_CONNECTION": "d1"
+    "not_found_handling": "single-page-application",
   },
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "cf_first",
-      "database_id": "f420a226-f469-4d68-8d8a-02eeafab1a93"
-    }
-  ]
+      "database_id": "f420a226-f469-4d68-8d8a-02eeafab1a93",
+    },
+  ],
 }
