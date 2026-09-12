@@ -16,18 +16,21 @@ export class MacroManager {
   }
 
   static applyResponseMacros(target: any) {
+    if (this.responseMacros.size === 0) return
     for (const [name, fn] of this.responseMacros.entries()) {
       target[name] = fn.bind(target)
     }
   }
 
   static applyRequestMacros(target: any) {
+    if (this.requestMacros.size === 0) return
     for (const [name, fn] of this.requestMacros.entries()) {
       target[name] = fn.bind(target)
     }
   }
 
   static applyContextMacros(target: any) {
+    if (this.contextMacros.size === 0) return
     for (const [name, fn] of this.contextMacros.entries()) {
       target[name] = fn.bind(target)
     }

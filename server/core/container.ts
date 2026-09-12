@@ -46,7 +46,9 @@ export class Container {
     if (typeof target === 'function') {
       const paramTypes = Reflect.getMetadata('design:paramtypes', target) || []
       const resolvedParams = paramTypes.map((param: any) => this.make(param))
-      return new (target as any)(...resolvedParams)
+      const instance = new (target as any)(...resolvedParams)
+      this.singletons.set(target, instance)
+      return instance
     }
 
     throw new Error(`[IoC Container] 無法解析依賴：${String(target)}`)

@@ -7,9 +7,19 @@ export interface TransactionOptions {
   isolationLevel?: IsolationLevels
 }
 
+export interface JoinClause {
+  type: 'LEFT' | 'INNER'
+  table: string
+  first: string
+  operator: string
+  second: string
+  aliasPrefix?: string
+}
+
 export interface QueryOptions {
   table: string
   fields?: string[]
+  joins?: JoinClause[]
   wheres?: Array<{ column: string; operator: string; value: any }>
   orders?: Array<{ column: string; direction: 'ASC' | 'DESC' }>
   limitCount?: number
@@ -27,7 +37,7 @@ memoryDb.set('notes', [
   { id: 2, user_id: 1, title: '【特性】Active Record & IoC 依賴注入', content: '使用熟悉的 Adonis Class-based 開發風格', created_at: dateTime.now().toISO() }
 ])
 memoryDb.set('users', [
-  { id: 1, email: 'admin@example.com', password: 'password123', full_name: '系統管理員', created_at: dateTime.now().toISO() }
+  { id: 1, username: 'root', email: 'admin@example.com', password: 'password123', full_name: '系統管理員', created_at: dateTime.now().toISO() }
 ])
 
 export class QueryBuilder<T = any> {
@@ -37,9 +47,25 @@ export class QueryBuilder<T = any> {
     this.options = {
       table,
       fields: ['*'],
+      joins: [],
       wheres: [],
       orders: []
     }
+  }
+
+  leftJoin(table: string, first: string, operatorOrSecond: string, second?: string, aliasPrefix?: string): this {
+    const operator = second !== undefined ? operatorOrSecond : '='
+    const secondCol = second !== undefined ? second : operatorOrSecond
+    this.options.joins = this.options.joins || []
+    this.options.joins.push({
+      type: 'LEFT',
+      table,
+      first,
+      operator,
+      second: secondCol,
+      aliasPrefix
+    })
+    return this
   }
 
   select(...fields: string[]): this {
@@ -111,6 +137,12 @@ export class QueryBuilder<T = any> {
     let sql = `SELECT ${this.options.fields!.join(', ')} FROM ${this.options.table}`
     const bindings: any[] = []
 
+    if (this.options.joins && this.options.joins.length > 0) {
+      for (const j of this.options.joins) {
+        sql += ` ${j.type} JOIN ${j.table} ON ${j.first} ${j.operator} ${j.second}`
+      }
+    }
+
     if (this.options.wheres && this.options.wheres.length > 0) {
       const conditions = this.options.wheres.map((w) => {
         if (w.operator === 'IN') {
@@ -171,19 +203,44 @@ export class QueryBuilder<T = any> {
 
     // 記憶體資料庫 fallback
     const tableData = (memoryDb.get(this.options.table) || []) as any[]
-    let filtered = [...tableData]
+    let filtered = tableData.map((r) => ({ ...r }))
+
+    if (this.options.joins && this.options.joins.length > 0) {
+      for (const j of this.options.joins) {
+        const joinTable = (memoryDb.get(j.table) || []) as any[]
+        const firstField = j.first.includes('.') ? j.first.split('.')[1] : j.first
+        const secondField = j.second.includes('.') ? j.second.split('.')[1] : j.second
+
+        filtered = filtered.map((row) => {
+          const match = joinTable.find((jRow) => String(jRow[secondField]) === String(row[firstField]))
+          const extended = { ...row }
+          if (j.aliasPrefix) {
+            if (match) {
+              for (const [k, v] of Object.entries(match)) {
+                extended[`${j.aliasPrefix}${k}`] = v
+              }
+            } else {
+              // 模擬 LEFT JOIN NULL 填入
+              extended[`${j.aliasPrefix}id`] = null
+            }
+          }
+          return extended
+        })
+      }
+    }
 
     if (this.options.wheres && this.options.wheres.length > 0) {
       filtered = filtered.filter((row) => {
         return this.options.wheres!.every((w) => {
+          const col = w.column.includes('.') ? w.column.split('.')[1] : w.column
           if (w.operator === 'IN') {
             const list = Array.isArray(w.value) ? w.value : [w.value]
-            return list.map(String).includes(String(row[w.column]))
+            return list.map(String).includes(String(row[col]))
           }
-          if (w.operator === '=') return String(row[w.column]) === String(w.value)
-          if (w.operator === '!=') return String(row[w.column]) !== String(w.value)
-          if (w.operator === '>') return Number(row[w.column]) > Number(w.value)
-          if (w.operator === '<') return Number(row[w.column]) < Number(w.value)
+          if (w.operator === '=') return String(row[col]) === String(w.value)
+          if (w.operator === '!=') return String(row[col]) !== String(w.value)
+          if (w.operator === '>') return Number(row[col]) > Number(w.value)
+          if (w.operator === '<') return Number(row[col]) < Number(w.value)
           return true
         })
       })
@@ -192,8 +249,9 @@ export class QueryBuilder<T = any> {
     if (this.options.orders && this.options.orders.length > 0) {
       filtered.sort((a, b) => {
         for (const o of this.options.orders!) {
-          if (a[o.column] < b[o.column]) return o.direction === 'ASC' ? -1 : 1
-          if (a[o.column] > b[o.column]) return o.direction === 'ASC' ? 1 : -1
+          const col = o.column.includes('.') ? o.column.split('.')[1] : o.column
+          if (a[col] < b[col]) return o.direction === 'ASC' ? -1 : 1
+          if (a[col] > b[col]) return o.direction === 'ASC' ? 1 : -1
         }
         return 0
       })
@@ -395,6 +453,10 @@ export class Database {
 
   static getEnv(): Env | undefined {
     return this.currentEnv
+  }
+
+  static getMemoryTable(table: string): Array<Record<string, any>> {
+    return memoryDb.get(table) || []
   }
 
   /**

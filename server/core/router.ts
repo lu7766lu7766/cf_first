@@ -286,18 +286,31 @@ export class AdonisRouter {
       const honoMethod = route.method.toLowerCase() as 'get' | 'post' | 'put' | 'patch' | 'delete'
 
       if (typeof honoApp[honoMethod] === 'function') {
+        // 預先編譯該路由的中介層管線與 Controller 實例，消除每請求陣列配置與解析耗時
+        const compiledMiddlewares = [
+          ...AdonisRouter.globalMiddlewares,
+          ...HttpKernel.getGlobalMiddlewares(),
+          ...route.middlewares
+        ]
+
+        let controllerInstance: any = null
+        let actionMethodName: string | null = null
+        if (Array.isArray(route.action)) {
+          const [ControllerClass, actionName] = route.action
+          controllerInstance = Container.make(ControllerClass)
+          actionMethodName = actionName
+          if (typeof controllerInstance[actionName] !== 'function') {
+            throw new Error(`Controller 方法未定義: ${ControllerClass.name}.${actionName}`)
+          }
+        }
+
         honoApp[honoMethod](route.path, async (c) => {
           const ctx = createHttpContext(c)
-          ctx.auth = new AuthManager(ctx)
           Database.setEnv(c.env)
 
           try {
             let actionResponse: Response | null = null
-            const allMiddlewares = [
-              ...AdonisRouter.globalMiddlewares,
-              ...HttpKernel.getGlobalMiddlewares(),
-              ...route.middlewares
-            ]
+            const allMiddlewares = compiledMiddlewares
 
             // 執行中介層管線 (Middleware Pipeline)
             let middlewareIndex = 0
@@ -311,13 +324,8 @@ export class AdonisRouter {
               } else {
                 // 執行 Controller Action
                 let result: any
-                if (Array.isArray(route.action)) {
-                  const [ControllerClass, actionName] = route.action
-                  const instance = Container.make(ControllerClass)
-                  if (typeof (instance as any)[actionName] !== 'function') {
-                    throw new Error(`Controller 方法未定義: ${ControllerClass.name}.${actionName}`)
-                  }
-                  result = await (instance as any)[actionName](ctx)
+                if (controllerInstance && actionMethodName) {
+                  result = await controllerInstance[actionMethodName](ctx)
                 } else if (typeof route.action === 'function') {
                   result = await route.action(ctx)
                 }

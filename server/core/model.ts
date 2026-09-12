@@ -17,6 +17,50 @@ export class BaseModel {
   static table: string = ''
   static primaryKey: string = 'id'
   static hidden: string[] = []
+  static columns?: string[]
+  private static tableColumnsCache = new Map<string, string[]>()
+
+  /**
+   * 自動解析並快取資料表所有欄位：
+   * 1. 優先使用手動定義的 static columns（若有）
+   * 2. 若連接 D1，透過 PRAGMA table_info 自動檢測並快取在記憶體
+   * 3. 若為本機/測試記憶體資料庫，從第一筆紀錄自動推斷鍵名
+   * 4. 預設兜底基礎欄位
+   */
+  static async getColumns(this: typeof BaseModel): Promise<string[]> {
+    const tableName = (this as typeof BaseModel).getTableName()
+    if (BaseModel.tableColumnsCache.has(tableName)) {
+      return BaseModel.tableColumnsCache.get(tableName)!
+    }
+
+    if (this.columns && this.columns.length > 0) {
+      BaseModel.tableColumnsCache.set(tableName, this.columns)
+      return this.columns
+    }
+
+    const env = Database.getEnv()
+    if (env?.DB) {
+      try {
+        const { results } = await env.DB.prepare(`PRAGMA table_info(${tableName})`).all<any>()
+        if (results && results.length > 0) {
+          const cols = results.map((r: any) => r.name)
+          BaseModel.tableColumnsCache.set(tableName, cols)
+          return cols
+        }
+      } catch {
+        // fallback
+      }
+    }
+
+    const memoryData = Database.getMemoryTable(tableName)
+    if (memoryData && memoryData.length > 0) {
+      const cols = Object.keys(memoryData[0]).filter((k) => !k.startsWith('_'))
+      BaseModel.tableColumnsCache.set(tableName, cols)
+      return cols
+    }
+
+    return ['id', 'created_at', 'updated_at']
+  }
 
   static hooks = {
     beforeCreate: [] as ModelHookFn[],
@@ -27,18 +71,35 @@ export class BaseModel {
     afterDelete: [] as ModelHookFn[]
   }
 
-  declare created_at: DateTime
-  declare updated_at: DateTime
+  private _created_at_dt?: DateTime | null
+  private _updated_at_dt?: DateTime | null
+  private _raw_created_at?: any
+  private _raw_updated_at?: any
 
   constructor(attributes: Record<string, any> = {}) {
-    Object.assign(this, attributes)
+    const { created_at, updated_at, createdAt, updatedAt, ...rest } = attributes
+    Object.assign(this, rest)
 
-    // 自動轉換 created_at 與 updated_at 為 Luxon DateTime 實例
-    if (this.created_at && !DateTime.isDateTime(this.created_at)) {
-      this.created_at = this.parseToDateTime(this.created_at)
+    const rawCreated = created_at !== undefined ? created_at : createdAt
+    if (rawCreated !== undefined) {
+      if (DateTime.isDateTime(rawCreated)) {
+        this._created_at_dt = rawCreated
+        this._raw_created_at = rawCreated.toISO()
+      } else {
+        this._raw_created_at = rawCreated
+        this._created_at_dt = null
+      }
     }
-    if (this.updated_at && !DateTime.isDateTime(this.updated_at)) {
-      this.updated_at = this.parseToDateTime(this.updated_at)
+
+    const rawUpdated = updated_at !== undefined ? updated_at : updatedAt
+    if (rawUpdated !== undefined) {
+      if (DateTime.isDateTime(rawUpdated)) {
+        this._updated_at_dt = rawUpdated
+        this._raw_updated_at = rawUpdated.toISO()
+      } else {
+        this._raw_updated_at = rawUpdated
+        this._updated_at_dt = null
+      }
     }
   }
 
@@ -59,21 +120,24 @@ export class BaseModel {
     return dateTime.now()
   }
 
+  declare created_at: DateTime
+  declare updated_at: DateTime
+
   /**
    * 駝峰式 createdAt / updatedAt 雙向相容存取器
    */
   get createdAt(): DateTime {
-    return this.created_at
+    return (this as any).created_at
   }
   set createdAt(val: any) {
-    this.created_at = this.parseToDateTime(val)
+    ;(this as any).created_at = val
   }
 
   get updatedAt(): DateTime {
-    return this.updated_at
+    return (this as any).updated_at
   }
   set updatedAt(val: any) {
-    this.updated_at = this.parseToDateTime(val)
+    ;(this as any).updated_at = val
   }
 
   static getTableName(this: typeof BaseModel): string {
@@ -300,26 +364,32 @@ export class BaseModel {
     const copy: Record<string, any> = {}
 
     for (const key of Object.keys(this)) {
-      if (typeof (this as any)[key] !== 'function' && !hiddenSet.has(key)) {
-        const val = (this as any)[key]
-        if (DateTime.isDateTime(val)) {
-          copy[key] = val.toISO()
-        } else if (val && typeof val.toJSON === 'function') {
-          copy[key] = val.toJSON()
-        } else if (Array.isArray(val)) {
-          copy[key] = val.map((item) => (item && typeof item.toJSON === 'function' ? item.toJSON() : item))
-        } else {
-          copy[key] = val
-        }
+      if (key.startsWith('_') || typeof (this as any)[key] === 'function' || hiddenSet.has(key)) {
+        continue
+      }
+      const val = (this as any)[key]
+      if (DateTime.isDateTime(val)) {
+        copy[key] = val.toISO()
+      } else if (val && typeof val.toJSON === 'function') {
+        copy[key] = val.toJSON()
+      } else if (Array.isArray(val)) {
+        copy[key] = val.map((item) => (item && typeof item.toJSON === 'function' ? item.toJSON() : item))
+      } else {
+        copy[key] = val
       }
     }
 
-    // 雙向相容：確保 createdAt 與 updatedAt 序列化
-    if (this.created_at && !copy.createdAt) {
-      copy.createdAt = DateTime.isDateTime(this.created_at) ? this.created_at.toISO() : this.created_at
+    // 雙向相容：確保 created_at / createdAt 與 updated_at / updatedAt 序列化 (優先取 rawString，避免無謂 DateTime.toISO)
+    const rawCreated = this._raw_created_at || (this._created_at_dt ? this._created_at_dt.toISO() : null)
+    if (rawCreated && !hiddenSet.has('created_at')) {
+      copy.created_at = rawCreated
+      if (!hiddenSet.has('createdAt')) copy.createdAt = rawCreated
     }
-    if (this.updated_at && !copy.updatedAt) {
-      copy.updatedAt = DateTime.isDateTime(this.updated_at) ? this.updated_at.toISO() : this.updated_at
+
+    const rawUpdated = this._raw_updated_at || (this._updated_at_dt ? this._updated_at_dt.toISO() : null)
+    if (rawUpdated && !hiddenSet.has('updated_at')) {
+      copy.updated_at = rawUpdated
+      if (!hiddenSet.has('updatedAt')) copy.updatedAt = rawUpdated
     }
 
     return copy
@@ -335,14 +405,60 @@ export class BaseModel {
   }
 }
 
+// 動態在 BaseModel.prototype 上定義 created_at 與 updated_at 的 Lazy 存取器，消除子類別欄位衝突
+Object.defineProperty(BaseModel.prototype, 'created_at', {
+  get(this: any) {
+    if (this._created_at_dt) return this._created_at_dt
+    if (this._raw_created_at) {
+      this._created_at_dt = this.parseToDateTime(this._raw_created_at)
+      return this._created_at_dt
+    }
+    return undefined
+  },
+  set(this: any, val: any) {
+    if (DateTime.isDateTime(val)) {
+      this._created_at_dt = val
+      this._raw_created_at = val.toISO()
+    } else {
+      this._raw_created_at = val
+      this._created_at_dt = null
+    }
+  },
+  configurable: true,
+  enumerable: true
+})
+
+Object.defineProperty(BaseModel.prototype, 'updated_at', {
+  get(this: any) {
+    if (this._updated_at_dt) return this._updated_at_dt
+    if (this._raw_updated_at) {
+      this._updated_at_dt = this.parseToDateTime(this._raw_updated_at)
+      return this._updated_at_dt
+    }
+    return undefined
+  },
+  set(this: any, val: any) {
+    if (DateTime.isDateTime(val)) {
+      this._updated_at_dt = val
+      this._raw_updated_at = val.toISO()
+    } else {
+      this._raw_updated_at = val
+      this._updated_at_dt = null
+    }
+  },
+  configurable: true,
+  enumerable: true
+})
+
 export interface PreloadDefinition {
   relation: string
   callback?: (query: ModelQueryBuilder<any>) => void
+  strategy?: 'join' | 'select'
 }
 
 /**
  * AdonisJS / Lucid 風格之 Model 查詢構建器
- * 支援 Thenable (直接 await)、.preload(...) 關聯預載入與 Model 實例自動封裝
+ * 支援 Thenable (直接 await)、單次 SQL JOIN (.withJoin)、.preload(...) 關聯預載入與 Model 實例自動封裝
  */
 export class ModelQueryBuilder<T extends typeof BaseModel = typeof BaseModel> implements PromiseLike<Array<InstanceType<T>>> {
   private preloads: PreloadDefinition[] = []
@@ -423,26 +539,27 @@ export class ModelQueryBuilder<T extends typeof BaseModel = typeof BaseModel> im
   }
 
   /**
-   * 鏈式預載入關聯資料，支援可選的自訂查詢 callback
-   * 例如: .preload('user') 或 .preload('user', (q) => q.select('id', 'email'))
+   * 鏈式預載入關聯資料，支援可選的自訂查詢 callback 與 strategy
+   * 對於 belongsTo 與 hasOne，預設自動採用高效單次 SQL JOIN
    */
-  preload(relationName: string, callback?: (query: ModelQueryBuilder<any>) => void): this {
-    this.preloads.push({ relation: relationName, callback })
+  preload(relationName: string, callback?: (query: ModelQueryBuilder<any>) => void, strategy?: 'join' | 'select'): this {
+    this.preloads.push({ relation: relationName, callback, strategy })
     return this
+  }
+
+  /**
+   * 顯式宣告以單次 SQL LEFT JOIN 方式預載關聯，消除額外的 D1 往返延遲
+   */
+  withJoin(relationName: string, callback?: (query: ModelQueryBuilder<any>) => void): this {
+    return this.preload(relationName, callback, 'join')
   }
 
   /**
    * 取得第一筆結果並封裝為 Model 實例，同時處理預載入
    */
   async first(): Promise<InstanceType<T> | null> {
-    const row = await this.dbQuery.first()
-    if (!row) return null
-
-    const instance = new (this.modelClass as any)(row) as InstanceType<T>
-    if (this.preloads.length > 0) {
-      await this.eagerLoad([instance])
-    }
-    return instance
+    const list = await this.limit(1).all()
+    return list[0] || null
   }
 
   /**
@@ -458,14 +575,100 @@ export class ModelQueryBuilder<T extends typeof BaseModel = typeof BaseModel> im
   }
 
   /**
-   * 取得所有符合條件的 Model 實例，並批次加載所有指定的預載關聯
+   * 取得所有符合條件的 Model 實例，並以單次 SQL JOIN 或批次加載所有指定的預載關聯
    */
   async all(): Promise<Array<InstanceType<T>>> {
-    const rows = await this.dbQuery.all()
-    const instances = rows.map((r: any) => new (this.modelClass as any)(r) as InstanceType<T>)
+    const relations = getModelRelations(this.modelClass)
+    const joinPreloads: PreloadDefinition[] = []
+    const selectPreloads: PreloadDefinition[] = []
 
-    if (instances.length > 0 && this.preloads.length > 0) {
-      await this.eagerLoad(instances)
+    for (const p of this.preloads) {
+      const meta = relations[p.relation]
+      // belongsTo 與 hasOne 預設走單次 SQL JOIN（極速模式）
+      const canJoin = meta && (meta.type === 'belongsTo' || meta.type === 'hasOne')
+      if (p.strategy === 'join' || (p.strategy !== 'select' && canJoin)) {
+        joinPreloads.push(p)
+      } else {
+        selectPreloads.push(p)
+      }
+    }
+
+    const sourceTable = (this.modelClass as typeof BaseModel).getTableName()
+    if (joinPreloads.length > 0) {
+      // 確保主表欄位不被 JOIN 表欄位覆蓋
+      const currentFields = (this.dbQuery as any).options.fields || ['*']
+      const selectFields: string[] = currentFields.map((f: string) => (f === '*' ? `${sourceTable}.*` : f))
+
+      for (const p of joinPreloads) {
+        const meta = relations[p.relation]
+        const TargetModel = meta.modelLoader()
+        const targetTable = TargetModel.getTableName()
+        const localKey = meta.foreignKey || (meta.type === 'belongsTo' ? `${TargetModel.name.replace(/Model$/i, '').toLowerCase()}_id` : (this.modelClass.primaryKey || 'id'))
+        const foreignKey = meta.ownerKey || (meta.type === 'belongsTo' ? (TargetModel.primaryKey || 'id') : (meta.foreignKey || `${this.modelClass.name.replace(/Model$/i, '').toLowerCase()}_id`))
+
+        let targetCols = TargetModel.getColumns ? await TargetModel.getColumns() : ['id', 'created_at', 'updated_at']
+        if (p.callback) {
+          const dummyQB = TargetModel.query()
+          p.callback(dummyQB)
+          const dummyFields = (dummyQB as any).dbQuery.options.fields
+          if (dummyFields && dummyFields.length > 0 && dummyFields[0] !== '*') {
+            targetCols = dummyFields
+          }
+        }
+
+        for (const col of targetCols) {
+          selectFields.push(`${targetTable}.${col} AS __rel_${p.relation}__${col}`)
+        }
+
+        this.dbQuery.leftJoin(
+          targetTable,
+          `${sourceTable}.${localKey}`,
+          '=',
+          `${targetTable}.${foreignKey}`,
+          `__rel_${p.relation}__`
+        )
+      }
+
+      this.dbQuery.select(...selectFields)
+    }
+
+    const rows = await this.dbQuery.all()
+
+    const instances: Array<InstanceType<T>> = rows.map((r: any) => {
+      const rowCopy = { ...r }
+      const instance = new (this.modelClass as any)(rowCopy) as InstanceType<T>
+
+      if (joinPreloads.length > 0) {
+        for (const p of joinPreloads) {
+          const prefix = `__rel_${p.relation}__`
+          const relData: Record<string, any> = {}
+          let hasVal = false
+          for (const key of Object.keys(r)) {
+            if (key.startsWith(prefix)) {
+              const subKey = key.slice(prefix.length)
+              const val = r[key]
+              relData[subKey] = val
+              delete (instance as any)[key]
+              if (val !== null && val !== undefined) {
+                hasVal = true
+              }
+            }
+          }
+          const meta = relations[p.relation]
+          const TargetModel = meta.modelLoader()
+          if (hasVal && relData[TargetModel.primaryKey || 'id'] !== null && relData[TargetModel.primaryKey || 'id'] !== undefined) {
+            ;(instance as any)[p.relation] = new TargetModel(relData)
+          } else {
+            ;(instance as any)[p.relation] = null
+          }
+        }
+      }
+
+      return instance
+    })
+
+    if (instances.length > 0 && selectPreloads.length > 0) {
+      await this.eagerLoad(instances, selectPreloads)
     }
 
     return instances
@@ -513,13 +716,13 @@ export class ModelQueryBuilder<T extends typeof BaseModel = typeof BaseModel> im
   /**
    * 批次預載入邏輯（Eager Loading 防止 N+1）
    */
-  async eagerLoad(models: Array<InstanceType<T>>): Promise<void> {
+  async eagerLoad(models: Array<InstanceType<T>>, preloadsToLoad: PreloadDefinition[] = this.preloads): Promise<void> {
     if (models.length === 0) return
 
     const relations = getModelRelations(this.modelClass)
     const primaryKey = (this.modelClass as any).primaryKey || 'id'
 
-    for (const preloadDef of this.preloads) {
+    for (const preloadDef of preloadsToLoad) {
       const relationName = preloadDef.relation
       const meta = relations[relationName]
       if (!meta) {
