@@ -3,7 +3,7 @@ import { Env } from '../core/env'
 export const env = Env.create({
   // 1. 應用程式基礎設定
   APP_KEY: Env.schema.string({ default: 'cf-first-super-secret-adonis-app-key-32chars' }),
-  APP_TIMEZONE: Env.schema.string({ default: 'Asia/Taipei' }),
+  TZ: Env.schema.string({ default: 'Asia/Taipei' }),
   NODE_ENV: Env.schema.enum(['development', 'production', 'test'] as const, { default: 'development' }),
   PORT: Env.schema.number({ default: 8787 }).optional(),
 

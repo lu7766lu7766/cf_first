@@ -7,7 +7,7 @@ export interface Env {
   DB?: D1Database
   JWT_SECRET?: string
   APP_KEY?: string
-  APP_TIMEZONE?: string
+  TZ?: string
   NODE_ENV?: string
   DB_CONNECTION?: string
   DB_HOST?: string

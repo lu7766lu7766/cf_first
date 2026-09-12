@@ -332,7 +332,7 @@ async function runTests() {
   // 15. Env 核心環境變數系統讀取與型別驗證
   {
     const appKey = env.get('APP_KEY')
-    const timezone = env.get('APP_TIMEZONE')
+    const timezone = env.get('TZ')
     const dbConn = env.get('DB_CONNECTION')
     const port = env.get('PORT')
 
@@ -341,7 +341,7 @@ async function runTests() {
       timezone === 'Asia/Taipei' &&
       ['d1', 'sqlite', 'postgres', 'mysql'].includes(dbConn) &&
       typeof port === 'number' && port > 0,
-      '15. Env 核心環境變數系統讀取與型別解析 (APP_KEY, APP_TIMEZONE, DB_CONNECTION, PORT)'
+      '15. Env 核心環境變數系統讀取與型別解析 (APP_KEY, TZ, DB_CONNECTION, PORT)'
     )
   }
 

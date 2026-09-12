@@ -11,7 +11,7 @@
     "not_found_handling": "single-page-application"
   },
   "vars": {
-    "APP_TIMEZONE": "Asia/Taipei",
+    "TZ": "Asia/Taipei",
     "NODE_ENV": "development",
     "DB_CONNECTION": "d1"
   },
