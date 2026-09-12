@@ -4,6 +4,8 @@ import path from 'path'
 import crypto from 'crypto'
 import { execSync } from 'child_process'
 import { fileURLToPath } from 'url'
+import { databaseConfig } from './config/database'
+import { DriverFactory } from './core/drivers/driver_factory'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -11,12 +13,16 @@ const __dirname = path.dirname(__filename)
 const args = process.argv.slice(2)
 const command = args[0]
 const targetName = args[1]
+const isRemote = args.includes('--remote')
 
 function printHelp() {
+  const currentConn = (databaseConfig.default || 'd1').toUpperCase()
   console.log(`
 \x1b[35m╭─────────────────────────────────────────────────────────────╮\x1b[0m
-\x1b[35m│\x1b[0m  \x1b[1;36mAdonisJS 7 Ace CLI (Cloudflare Edge Edition)\x1b[0m               \x1b[35m│\x1b[0m
+\x1b[35m│\x1b[0m  \x1b[1;36mAdonisJS 7 Ace CLI (Multi-Database Edition)\x1b[0m                \x1b[35m│\x1b[0m
 \x1b[35m╰─────────────────────────────────────────────────────────────╯\x1b[0m
+
+\x1b[33m當前生效連線 (DB_CONNECTION):\x1b[0m \x1b[1;32m${currentConn}\x1b[0m
 
 \x1b[33m使用方式:\x1b[0m
   pnpm ace <指令> [參數]
@@ -31,13 +37,13 @@ function printHelp() {
   \x1b[1mgenerate:key\x1b[0m             產出安全隨機 APP_KEY (寫入 .env/.dev.vars，支援 --show, --jwt)
   \x1b[1mgenerate:jwt-secret\x1b[0m      產出安全隨機 JWT_SECRET (寫入 .env/.dev.vars，支援 --show)
   \x1b[1mgenerate:secrets\x1b[0m         一次產出 APP_KEY 與 JWT_SECRET 並同步寫入環境檔
-  \x1b[1mmigration:run\x1b[0m            執行未套用的 Knex 資料庫遷移 (記錄至 adonis_schema)
+  \x1b[1mmigration:run\x1b[0m            執行未套用的 Knex 資料庫遷移 (多資料庫支援，記錄至 adonis_schema)
   \x1b[1mmigration:rollback\x1b[0m       回滾上一批次 (Batch) 的資料庫遷移
   \x1b[1mmigration:status\x1b[0m         查看所有遷移檔案的套用狀態與批次
   \x1b[1mmigration:fresh\x1b[0m          重置資料庫並重新執行所有遷移 (可加 --seed [-f <name>])
-  \x1b[1mdb:seed [-f <name>]\x1b[0m       執行資料庫種子腳本 (支援 -f/--files 指定檔案或全目錄執行，可加 --remote)
-  \x1b[1mdb:pull\x1b[0m                  從線上 Cloudflare D1 拉取最新資料並同步至本機 SQLite
-  \x1b[1mdb:path\x1b[0m                  查看本機 D1 SQLite 實體路徑與 tmp/db.sqlite 狀態
+  \x1b[1mdb:seed [-f <name>]\x1b[0m       執行資料庫種子腳本 (支援 -f/--files 指定檔案或全目錄執行，支援多資料庫)
+  \x1b[1mdb:pull\x1b[0m                  從線上 Cloudflare D1 拉取最新資料並同步至本機 SQLite (D1 專用)
+  \x1b[1mdb:path\x1b[0m                  查看本機 D1 SQLite 實體路徑與 tmp/db.sqlite 狀態 (D1 專用)
 `)
 }
 
@@ -108,7 +114,7 @@ function findLocalSqlitePath(): string | null {
   const d1Dir = path.join(__dirname, '../.wrangler/state/v3/d1')
   if (!fs.existsSync(d1Dir)) return null
 
-  const sqliteFiles: Array<{ path: string; mtime: number }> = []
+  const sqliteFiles: Array<{ path: string; mtime: number; score: number }> = []
 
   function scan(dir: string): void {
     try {
@@ -124,7 +130,12 @@ function findLocalSqlitePath(): string | null {
           !entry.name.includes('-wal')
         ) {
           const stats = fs.statSync(fullPath)
-          sqliteFiles.push({ path: fullPath, mtime: stats.mtimeMs })
+          let score = stats.mtimeMs
+          try {
+            const tables = execSync(`sqlite3 "${fullPath}" "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('auth_access_tokens', 'users');"`, { stdio: 'pipe' }).toString()
+            score += Number(tables.trim()) * 1e11
+          } catch {}
+          sqliteFiles.push({ path: fullPath, mtime: stats.mtimeMs, score })
         }
       }
     } catch {}
@@ -132,7 +143,7 @@ function findLocalSqlitePath(): string | null {
 
   scan(d1Dir)
   if (sqliteFiles.length === 0) return null
-  sqliteFiles.sort((a, b) => b.mtime - a.mtime)
+  sqliteFiles.sort((a, b) => b.score - a.score)
   return sqliteFiles[0].path
 }
 
@@ -143,7 +154,6 @@ function ensureDbSymlink(): { symlink: string; target: string } | null {
   const sqliteFile = findLocalSqlitePath()
   if (!sqliteFile) return null
 
-  // 強制執行 WAL Checkpoint，將所有暫存寫入主資料庫，防止第三方 GUI 工具讀取失敗
   try {
     execSync(`sqlite3 "${sqliteFile}" "PRAGMA wal_checkpoint(TRUNCATE);"`, { stdio: 'pipe' })
   } catch {}
@@ -174,195 +184,6 @@ function ensureDbSymlink(): { symlink: string; target: string } | null {
   return { symlink: path.join(tmpDir, 'db.sqlite'), target: sqliteFile }
 }
 
-const isRemote = args.includes('--remote')
-
-/**
- * 透過 Wrangler D1 執行 SQL 指令（使用暫存檔防止引號跳脫問題，支援 --remote）
- */
-function runD1Sql(sql: string): void {
-  const projectRoot = path.join(__dirname, '..')
-  const tempFile = path.join(__dirname, `temp_${Date.now()}_exec.sql`)
-  fs.writeFileSync(tempFile, sql, 'utf-8')
-  const targetFlag = isRemote ? '--remote' : '--local'
-  try {
-    execSync(`pnpm exec wrangler d1 execute DB ${targetFlag} --file="${tempFile}"`, {
-      stdio: 'pipe',
-      cwd: projectRoot
-    })
-  } finally {
-    if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile)
-  }
-}
-
-/**
- * 透過 Wrangler D1 執行查詢並以 JSON 解析回傳（支援 --remote）
- */
-function queryD1Json<T = any>(sql: string): T[] {
-  const projectRoot = path.join(__dirname, '..')
-  const escapedSql = sql.replace(/"/g, '\\"')
-  const targetFlag = isRemote ? '--remote' : '--local'
-  try {
-    const output = execSync(`pnpm exec wrangler d1 execute DB ${targetFlag} --json --command="${escapedSql}"`, {
-      cwd: projectRoot,
-      encoding: 'utf-8',
-      stdio: 'pipe'
-    })
-    const parsed = JSON.parse(output)
-    return (parsed[0]?.results as T[]) || []
-  } catch {
-    return []
-  }
-}
-
-interface SchemaRecord {
-  id: number
-  name: string
-  batch: number
-  migration_time: string
-}
-
-/**
- * 初始化 AdonisJS 標準 adonis_schema 歷史紀錄表，並自動相容既有表格
- */
-async function initSchemaTable(migrationFiles: string[]) {
-  // 1. 建立 adonis_schema 資料表（若不存在）
-  const createTableSql = `
-CREATE TABLE IF NOT EXISTS adonis_schema (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT UNIQUE,
-  batch INTEGER,
-  migration_time DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-`
-  runD1Sql(createTableSql)
-
-  // 2. 檢查目前已記錄之遷移
-  const records = queryD1Json<SchemaRecord>('SELECT name, batch FROM adonis_schema;')
-  const migratedSet = new Set(records.map((r) => r.name))
-
-  // 3. 過渡期相容：若 adonis_schema 為空，但資料庫中已有既有表格 (users / notes)，自動登錄為 Batch 1
-  if (records.length === 0) {
-    const tables = queryD1Json<{ name: string }>(
-      "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != 'adonis_schema';"
-    )
-    const tableNames = tables.map((t) => t.name)
-
-    const legacyFilesToSeed: string[] = []
-    for (const file of migrationFiles) {
-      const lower = file.toLowerCase()
-      if (lower.includes('users') && tableNames.includes('users')) {
-        legacyFilesToSeed.push(file)
-      } else if (lower.includes('notes') && tableNames.includes('notes')) {
-        legacyFilesToSeed.push(file)
-      }
-    }
-
-    if (legacyFilesToSeed.length > 0) {
-      console.log(`\x1b[33m💡 [遷移系統] 偵測到現有資料表 (${tableNames.join(', ')})，自動對齊登記至 adonis_schema (Batch 1)...\x1b[0m`)
-      const seedSql = legacyFilesToSeed
-        .map((f) => `INSERT OR IGNORE INTO adonis_schema (name, batch) VALUES ('${f}', 1);`)
-        .join('\n')
-      runD1Sql(seedSql)
-    }
-  }
-}
-
-function escapeSqlValue(v: any): string {
-  if (v === null || v === undefined) return 'NULL'
-  if (typeof v === 'number') return String(v)
-  if (typeof v === 'boolean') return v ? '1' : '0'
-  if (typeof v === 'string') return `'${v.replace(/'/g, "''")}'`
-  if (v instanceof Date) return `'${v.toISOString()}'`
-  if (typeof v === 'object') return `'${JSON.stringify(v).replace(/'/g, "''")}'`
-  return `'${String(v).replace(/'/g, "''")}'`
-}
-
-function interpolateSql(sql: string, bindings: any[] = []): string {
-  let idx = 0
-  return sql.replace(/\?/g, () => {
-    if (idx < bindings.length) {
-      return escapeSqlValue(bindings[idx++])
-    }
-    return 'NULL'
-  })
-}
-
-/**
- * 為 CLI 環境注入 D1 Database 驅動適配器，使 Seeder 內的 Model 與 QueryBuilder 直接操作實體 D1
- */
-async function initCliDatabaseEnv(isRemote: boolean): Promise<void> {
-  const localFile = findLocalSqlitePath()
-
-  const executeQuery = (sql: string, bindings: any[] = []): any[] => {
-    const finalSql = interpolateSql(sql, bindings)
-    if (!isRemote && localFile && fs.existsSync(localFile)) {
-      try {
-        const out = execSync(`sqlite3 "${localFile}" -json "${finalSql.replace(/"/g, '\\"')}"`, {
-          encoding: 'utf-8',
-          stdio: 'pipe'
-        })
-        return out.trim() ? JSON.parse(out) : []
-      } catch {}
-    }
-    return queryD1Json(finalSql)
-  }
-
-  const executeRun = (sql: string, bindings: any[] = []): { changes: number; last_row_id: number } => {
-    const finalSql = interpolateSql(sql, bindings)
-    let lastRowId = 0
-    let changes = 0
-
-    if (!isRemote && localFile && fs.existsSync(localFile)) {
-      try {
-        const fullSql = `${finalSql};\nSELECT changes() as changes, last_insert_rowid() as last_row_id;`
-        const tempFile = path.join(__dirname, `temp_${Date.now()}_${Math.random().toString(36).slice(2)}.sql`)
-        fs.writeFileSync(tempFile, fullSql, 'utf-8')
-        try {
-          const out = execSync(`sqlite3 "${localFile}" -json < "${tempFile}"`, {
-            encoding: 'utf-8',
-            stdio: 'pipe'
-          })
-          const res = out.trim() ? JSON.parse(out) : []
-          const meta = res[res.length - 1] || {}
-          changes = meta.changes || 0
-          lastRowId = meta.last_row_id || 0
-          return { changes, last_row_id: lastRowId }
-        } finally {
-          if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile)
-        }
-      } catch {}
-    }
-
-    runD1Sql(finalSql)
-    const lastIdRes = queryD1Json<{ id: number }>('SELECT last_insert_rowid() as id;')
-    lastRowId = lastIdRes[0]?.id || 0
-    return { changes: 1, last_row_id: lastRowId }
-  }
-
-  const cliD1Binding = {
-    prepare(sql: string) {
-      let boundValues: any[] = []
-      return {
-        bind(...values: any[]) {
-          boundValues = values
-          return this
-        },
-        async all<T = any>() {
-          const results = executeQuery(sql, boundValues)
-          return { results }
-        },
-        async run() {
-          const meta = executeRun(sql, boundValues)
-          return { meta }
-        }
-      }
-    }
-  }
-
-  const { Database } = await import('./core/database')
-  Database.setEnv({ DB: cliD1Binding } as any)
-}
-
 /**
  * 解析命令列中的 -f 或 --file/--files 參數
  */
@@ -385,9 +206,10 @@ function parseFileFlag(argsList: string[]): string | null {
 }
 
 /**
- * 動態載入並執行 Seeder 檔案（支援 -f 智慧指定與全目錄自然排序執行）
+ * 動態載入並執行 Seeder 檔案（支援多資料庫動態適配）
  */
 async function runSeeders(specifiedFile: string | null = null): Promise<void> {
+  const driver = DriverFactory.getDriver({ isRemote })
   const seedersDir = path.join(__dirname, 'database/seeders')
   if (!fs.existsSync(seedersDir)) {
     console.log('⚠️ 未找到 database/seeders 目錄。')
@@ -433,10 +255,14 @@ async function runSeeders(specifiedFile: string | null = null): Promise<void> {
     )
   }
 
-  console.log(`🌱 載入種子檔案並執行 (${isRemote ? '遠端 Cloudflare D1' : '本機 D1 SQLite'})...`)
+  const connDesc = driver.name === 'd1'
+    ? (isRemote ? '遠端 Cloudflare D1' : '本機 D1 SQLite')
+    : `外部資料庫 [${driver.name.toUpperCase()}]`
+  console.log(`🌱 載入種子檔案並執行 (${connDesc})...`)
   console.log(`📦 待執行 Seeder: ${filesToRun.join(', ')}\n`)
 
-  await initCliDatabaseEnv(isRemote)
+  const { Database } = await import('./core/database')
+  Database.connection(driver.name)
 
   let successCount = 0
   for (const file of filesToRun) {
@@ -475,7 +301,7 @@ async function runSeeders(specifiedFile: string | null = null): Promise<void> {
     console.log(`\x1b[33m⚠️ 部分種子腳本執行未全數成功 (${successCount}/${filesToRun.length})\x1b[0m`)
   }
 
-  if (!isRemote) {
+  if (driver.name === 'd1' && !isRemote) {
     ensureDbSymlink()
   }
 }
@@ -664,7 +490,12 @@ export default class ${className} extends BaseSeeder {
     }
 
     case 'migration:run': {
-      console.log(`🚀 開始執行 Knex TypeScript 資料庫遷移 (${isRemote ? '遠端 Cloudflare D1' : '本機 D1 SQLite'})...`)
+      const driver = DriverFactory.getDriver({ isRemote })
+      const connDesc = driver.name === 'd1'
+        ? (isRemote ? '遠端 Cloudflare D1' : '本機 D1 SQLite')
+        : `外部資料庫 [${driver.name.toUpperCase()}]`
+      console.log(`🚀 開始執行 Knex 資料庫遷移 (${connDesc})...`)
+
       const dir = path.join(rootDir, 'database/migrations')
       if (!fs.existsSync(dir)) {
         console.log('⚠️ 未找到 migrations 目錄。')
@@ -672,42 +503,38 @@ export default class ${className} extends BaseSeeder {
       }
 
       const allFiles = fs.readdirSync(dir).filter((f: string) => f.endsWith('.ts')).sort()
-      await initSchemaTable(allFiles)
+      await driver.initSchemaTable(allFiles)
 
-      // 取得已套用之遷移清單
-      const records = queryD1Json<SchemaRecord>('SELECT name, batch FROM adonis_schema;')
+      const records = await driver.getMigratedRecords()
       const migratedNames = new Set(records.map((r) => r.name))
       const pendingFiles = allFiles.filter((f) => !migratedNames.has(f))
 
       if (pendingFiles.length === 0) {
         console.log('\x1b[32m✔ 所有遷移皆已套用完成，資料庫處於最新狀態 (Database is up to date)。\x1b[0m')
-        if (!isRemote) ensureDbSymlink()
+        if (driver.name === 'd1' && !isRemote) ensureDbSymlink()
         break
       }
 
-      // 計算新 Batch 編號
-      const maxBatchResult = queryD1Json<{ max_batch: number | null }>('SELECT MAX(batch) as max_batch FROM adonis_schema;')
-      const currentBatch = ((maxBatchResult[0]?.max_batch) || 0) + 1
+      const maxBatch = records.length > 0 ? Math.max(...records.map((r) => r.batch)) : 0
+      const currentBatch = maxBatch + 1
 
       console.log(`📦 本次執行批次 (Batch): ${currentBatch}，共計 ${pendingFiles.length} 個待執行檔案。`)
 
       let successCount = 0
       for (const file of pendingFiles) {
         const filePath = path.join(dir, file)
-        console.log(`   \x1b[36m▶ [COMPILE & RUN]\x1b[0m ${file} -> ${isRemote ? '遠端 Cloudflare D1' : '本機 D1 SQLite'}`)
+        console.log(`   \x1b[36m▶ [COMPILE & RUN]\x1b[0m ${file} -> [${driver.name.toUpperCase()}]`)
         try {
           const migrationModule = await import(filePath)
           const MigrationClass = migrationModule.default
           const migration = new MigrationClass()
-          const sqls: string[] = await migration.compileUp()
+          const sqls: string[] = await migration.compileUp(driver.knexClient)
 
-          // 執行遷移 DDL
-          if (sqls.length > 0) {
-            runD1Sql(sqls.join(';\n') + ';')
+          for (const sql of sqls) {
+            await driver.executeRaw(sql)
           }
 
-          // 寫入 adonis_schema
-          runD1Sql(`INSERT INTO adonis_schema (name, batch) VALUES ('${file}', ${currentBatch});`)
+          await driver.recordMigration(file, currentBatch)
           successCount++
           console.log(`   \x1b[32m✔ [MIGRATED]\x1b[0m ${file}`)
         } catch (e) {
@@ -717,29 +544,30 @@ export default class ${className} extends BaseSeeder {
       }
 
       console.log(`\x1b[32m✔ 成功處理 ${successCount} 個 Knex 遷移檔案。\x1b[0m`)
-      ensureDbSymlink()
+      if (driver.name === 'd1' && !isRemote) ensureDbSymlink()
       break
     }
 
     case 'migration:rollback': {
-      console.log('🔄 開始執行資料庫遷移回滾 (Rollback)...')
+      const driver = DriverFactory.getDriver({ isRemote })
+      console.log(`🔄 開始執行資料庫遷移回滾 [${driver.name.toUpperCase()}] (Rollback)...`)
       const dir = path.join(rootDir, 'database/migrations')
       const allFiles = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f: string) => f.endsWith('.ts')).sort() : []
-      await initSchemaTable(allFiles)
+      await driver.initSchemaTable(allFiles)
 
-      const maxBatchResult = queryD1Json<{ max_batch: number | null }>('SELECT MAX(batch) as max_batch FROM adonis_schema;')
-      const maxBatch = maxBatchResult[0]?.max_batch
+      const records = await driver.getMigratedRecords()
+      const maxBatch = records.length > 0 ? Math.max(...records.map((r) => r.batch)) : 0
 
       if (!maxBatch || maxBatch <= 0) {
         console.log('\x1b[33m⚠️ 目前沒有可供回滾的遷移記錄。\x1b[0m')
         break
       }
 
-      const records = queryD1Json<SchemaRecord>(`SELECT name, batch FROM adonis_schema WHERE batch = ${maxBatch} ORDER BY id DESC;`)
-      console.log(`⏪ 正在回滾批次 (Batch: ${maxBatch})，共計 ${records.length} 個檔案...`)
+      const batchRecords = records.filter((r) => r.batch === maxBatch).reverse()
+      console.log(`⏪ 正在回滾批次 (Batch: ${maxBatch})，共計 ${batchRecords.length} 個檔案...`)
 
       let rollbackCount = 0
-      for (const record of records) {
+      for (const record of batchRecords) {
         const filePath = path.join(dir, record.name)
         console.log(`   \x1b[33m◀ [ROLLBACK]\x1b[0m ${record.name}`)
         try {
@@ -747,14 +575,14 @@ export default class ${className} extends BaseSeeder {
             const migrationModule = await import(filePath)
             const MigrationClass = migrationModule.default
             const migration = new MigrationClass()
-            const sqls: string[] = await migration.compileDown()
+            const sqls: string[] = await migration.compileDown(driver.knexClient)
 
-            if (sqls.length > 0) {
-              runD1Sql(sqls.join(';\n') + ';')
+            for (const sql of sqls) {
+              await driver.executeRaw(sql)
             }
           }
 
-          runD1Sql(`DELETE FROM adonis_schema WHERE name = '${record.name}';`)
+          await driver.rollbackMigration(record.name)
           rollbackCount++
           console.log(`   \x1b[32m✔ [ROLLED BACK]\x1b[0m ${record.name}`)
         } catch (e) {
@@ -764,18 +592,19 @@ export default class ${className} extends BaseSeeder {
       }
 
       console.log(`\x1b[32m✔ 成功回滾 ${rollbackCount} 個遷移檔案。\x1b[0m`)
-      ensureDbSymlink()
+      if (driver.name === 'd1' && !isRemote) ensureDbSymlink()
       break
     }
 
     case 'migration:status': {
-      console.log('📋 查詢資料庫遷移狀態 (Migration Status)...')
+      const driver = DriverFactory.getDriver({ isRemote })
+      console.log(`📋 查詢資料庫遷移狀態 [${driver.name.toUpperCase()}] (Migration Status)...`)
       const dir = path.join(rootDir, 'database/migrations')
       const allFiles = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f: string) => f.endsWith('.ts')).sort() : []
-      await initSchemaTable(allFiles)
+      await driver.initSchemaTable(allFiles)
 
-      const records = queryD1Json<SchemaRecord>('SELECT name, batch, migration_time FROM adonis_schema ORDER BY id ASC;')
-      const recordMap = new Map<string, SchemaRecord>()
+      const records = await driver.getMigratedRecords()
+      const recordMap = new Map<string, any>()
       for (const r of records) recordMap.set(r.name, r)
 
       console.log('\n\x1b[36m┌────────────────────────────────────────────────────────┬──────────┬───────┬─────────────────────┐\x1b[0m')
@@ -796,26 +625,26 @@ export default class ${className} extends BaseSeeder {
         }
       }
       console.log('\x1b[36m└────────────────────────────────────────────────────────┴──────────┴───────┴─────────────────────┘\x1b[0m\n')
-      ensureDbSymlink()
+      if (driver.name === 'd1' && !isRemote) ensureDbSymlink()
       break
     }
 
     case 'migration:fresh': {
-      console.log('\x1b[33m⚠️  正在重置本機 D1 資料庫 (Migration Fresh)... 全部表格將被清空！\x1b[0m')
-      const tables = queryD1Json<{ name: string }>(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';"
-      )
-      const tableNames = tables.map((t) => t.name)
-      if (tableNames.length > 0) {
-        console.log(`🗑️ 清理現存表格: ${tableNames.join(', ')}`)
-        const dropSql = tableNames.map((t) => `DROP TABLE IF EXISTS "${t}";`).join('\n')
-        runD1Sql(dropSql)
+      const driver = DriverFactory.getDriver({ isRemote })
+      console.log(`\x1b[33m⚠️  正在重置資料庫 [${driver.name.toUpperCase()}] (Migration Fresh)... 全部表格將被清空！\x1b[0m`)
+      const tables = await driver.getAllTables()
+      if (tables.length > 0) {
+        console.log(`🗑️ 清理現存表格: ${tables.join(', ')}`)
+        for (const t of tables) {
+          await driver.dropTable(t)
+        }
       }
+      await driver.dropTable('adonis_schema')
 
       console.log('🚀 開始從頭執行所有遷移檔案...')
       const dir = path.join(rootDir, 'database/migrations')
       const allFiles = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f: string) => f.endsWith('.ts')).sort() : []
-      await initSchemaTable(allFiles)
+      await driver.initSchemaTable(allFiles)
 
       for (const file of allFiles) {
         const filePath = path.join(dir, file)
@@ -823,16 +652,16 @@ export default class ${className} extends BaseSeeder {
         const migrationModule = await import(filePath)
         const MigrationClass = migrationModule.default
         const migration = new MigrationClass()
-        const sqls: string[] = await migration.compileUp()
-        if (sqls.length > 0) {
-          runD1Sql(sqls.join(';\n') + ';')
+        const sqls: string[] = await migration.compileUp(driver.knexClient)
+        for (const sql of sqls) {
+          await driver.executeRaw(sql)
         }
-        runD1Sql(`INSERT INTO adonis_schema (name, batch) VALUES ('${file}', 1);`)
+        await driver.recordMigration(file, 1)
         console.log(`   \x1b[32m✔ [MIGRATED]\x1b[0m ${file}`)
       }
 
       console.log('\x1b[32m✔ 所有遷移重新建構完成！\x1b[0m')
-      ensureDbSymlink()
+      if (driver.name === 'd1' && !isRemote) ensureDbSymlink()
 
       if (args.includes('--seed')) {
         console.log('\n🌱 自動執行種子腳本 (--seed)...')
@@ -843,6 +672,12 @@ export default class ${className} extends BaseSeeder {
     }
 
     case 'db:path': {
+      const driver = DriverFactory.getDriver({ isRemote })
+      if (driver.name !== 'd1') {
+        console.log(`\n\x1b[33m⚠️ 指令 db:path 為 Cloudflare D1 專屬維護工具。\n目前生效的資料庫連線為: [${driver.name.toUpperCase()}]。\x1b[0m\n`)
+        break
+      }
+
       console.log('\n\x1b[35m╭─────────────────────────────────────────────────────────────╮\x1b[0m')
       console.log('\x1b[35m│\x1b[0m  \x1b[1;36mCloudflare D1 SQLite 實體位置與 AdonisJS 捷徑\x1b[0m              \x1b[35m│\x1b[0m')
       console.log('\x1b[35m╰─────────────────────────────────────────────────────────────╯\x1b[0m\n')
@@ -871,6 +706,12 @@ export default class ${className} extends BaseSeeder {
     }
 
     case 'db:pull': {
+      const driver = DriverFactory.getDriver({ isRemote })
+      if (driver.name !== 'd1') {
+        console.log(`\n\x1b[33m⚠️ 指令 db:pull 為從 Cloudflare 線上 D1 拉取資料的專屬工具。\n目前生效的資料庫連線為: [${driver.name.toUpperCase()}]。\x1b[0m\n`)
+        break
+      }
+
       console.log('📥 正在從 Cloudflare 線上 D1 (cf_first) 下載最新資料庫並同步至地端...')
       const projectRoot = path.join(rootDir, '..')
       const tmpDir = path.join(projectRoot, 'tmp')
@@ -996,4 +837,12 @@ export default class ${className} extends BaseSeeder {
   }
 }
 
-run()
+async function main() {
+  try {
+    await run()
+  } finally {
+    await DriverFactory.closeAll()
+  }
+}
+
+main()

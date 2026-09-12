@@ -38,18 +38,15 @@ export class BaseModel {
       return this.columns
     }
 
-    const env = Database.getEnv()
-    if (env?.DB) {
-      try {
-        const { results } = await env.DB.prepare(`PRAGMA table_info(${tableName})`).all<any>()
-        if (results && results.length > 0) {
-          const cols = results.map((r: any) => r.name)
-          BaseModel.tableColumnsCache.set(tableName, cols)
-          return cols
-        }
-      } catch {
-        // fallback
+    try {
+      const driver = Database.getDriver()
+      const cols = await driver.getTableColumns(tableName)
+      if (cols && cols.length > 0) {
+        BaseModel.tableColumnsCache.set(tableName, cols)
+        return cols
       }
+    } catch {
+      // fallback
     }
 
     const memoryData = Database.getMemoryTable(tableName)
@@ -200,9 +197,19 @@ export class BaseModel {
     const relations = getModelRelations(modelClass)
     const payloadForDb: Record<string, any> = {}
     for (const [k, v] of Object.entries(instance)) {
-      if (typeof v !== 'function' && !relations[k]) {
+      if (typeof v !== 'function' && !relations[k] && !k.startsWith('_')) {
         payloadForDb[k] = DateTime.isDateTime(v) ? (v as DateTime).toFormat('yyyy-MM-dd HH:mm:ss') : v
       }
+    }
+    if (!payloadForDb.created_at && instance.created_at) {
+      payloadForDb.created_at = DateTime.isDateTime(instance.created_at)
+        ? (instance.created_at as DateTime).toFormat('yyyy-MM-dd HH:mm:ss')
+        : String(instance.created_at)
+    }
+    if (!payloadForDb.updated_at && instance.updated_at) {
+      payloadForDb.updated_at = DateTime.isDateTime(instance.updated_at)
+        ? (instance.updated_at as DateTime).toFormat('yyyy-MM-dd HH:mm:ss')
+        : String(instance.updated_at)
     }
 
     const inserted = await Database.from(tableName).insert(payloadForDb)
@@ -243,9 +250,19 @@ export class BaseModel {
 
       const payload: Record<string, any> = {}
       for (const [k, v] of Object.entries(instance)) {
-        if (typeof v !== 'function' && !relations[k]) {
+        if (typeof v !== 'function' && !relations[k] && !k.startsWith('_')) {
           payload[k] = DateTime.isDateTime(v) ? (v as DateTime).toFormat('yyyy-MM-dd HH:mm:ss') : v
         }
+      }
+      if (!payload.created_at && instance.created_at) {
+        payload.created_at = DateTime.isDateTime(instance.created_at)
+          ? (instance.created_at as DateTime).toFormat('yyyy-MM-dd HH:mm:ss')
+          : String(instance.created_at)
+      }
+      if (!payload.updated_at && instance.updated_at) {
+        payload.updated_at = DateTime.isDateTime(instance.updated_at)
+          ? (instance.updated_at as DateTime).toFormat('yyyy-MM-dd HH:mm:ss')
+          : String(instance.updated_at)
       }
       payloadsForDb.push(payload)
       instances.push(instance)
@@ -288,9 +305,19 @@ export class BaseModel {
     const relations = getModelRelations(constructor)
     const payloadForDb: Record<string, any> = {}
     for (const [k, v] of Object.entries(this)) {
-      if (typeof v !== 'function' && !relations[k]) {
+      if (typeof v !== 'function' && !relations[k] && !k.startsWith('_')) {
         payloadForDb[k] = DateTime.isDateTime(v) ? (v as DateTime).toFormat('yyyy-MM-dd HH:mm:ss') : v
       }
+    }
+    if (this.created_at && !payloadForDb.created_at) {
+      payloadForDb.created_at = DateTime.isDateTime(this.created_at)
+        ? (this.created_at as DateTime).toFormat('yyyy-MM-dd HH:mm:ss')
+        : String(this.created_at)
+    }
+    if (this.updated_at && !payloadForDb.updated_at) {
+      payloadForDb.updated_at = DateTime.isDateTime(this.updated_at)
+        ? (this.updated_at as DateTime).toFormat('yyyy-MM-dd HH:mm:ss')
+        : String(this.updated_at)
     }
 
     if (primaryVal) {

@@ -253,59 +253,59 @@ export class TokensGuard extends AuthGuard {
     let tokenRecord: any = null
     let safeUser: UserPayload | null = null
 
-    // 2. 若連接 Cloudflare D1，執行高效單次 SQL JOIN 查詢 (auth_access_tokens JOIN users)
-    if (this.ctx.env?.DB) {
-      const query = `
-        SELECT 
-          t.id, t.tokenable_id, t.type, t.name, t.hash, t.abilities, t.last_used_at, t.expires_at, t.created_at, t.updated_at,
-          u.id AS u_id, u.username AS u_username, u.email AS u_email, u.full_name AS u_full_name, u.created_at AS u_created_at, u.updated_at AS u_updated_at
-        FROM auth_access_tokens t
-        JOIN users u ON t.tokenable_id = u.id
-        WHERE t.hash = ?
-        LIMIT 1
-      `
-      const row = await this.ctx.env.DB.prepare(query).bind(hash).first<any>()
-      if (!row) {
-        TokensGuard.tokenMemoryCache.delete(hash)
-        throw new AuthenticationException('存取權杖不存在或已被註銷 (Token revoked or not found)', 'E_UNAUTHORIZED')
-      }
+    // 2. 執行高效單次 SQL JOIN 查詢 (auth_access_tokens JOIN users)，相容 D1 / PostgreSQL / MySQL / 記憶體庫
+    const row = await Database.from('auth_access_tokens')
+      .leftJoin('users', 'auth_access_tokens.tokenable_id', '=', 'users.id')
+      .where('auth_access_tokens.hash', hash)
+      .select(
+        'auth_access_tokens.id',
+        'auth_access_tokens.tokenable_id',
+        'auth_access_tokens.type',
+        'auth_access_tokens.name',
+        'auth_access_tokens.hash',
+        'auth_access_tokens.abilities',
+        'auth_access_tokens.last_used_at',
+        'auth_access_tokens.expires_at',
+        'auth_access_tokens.created_at',
+        'auth_access_tokens.updated_at',
+        'users.id as u_id',
+        'users.username as u_username',
+        'users.email as u_email',
+        'users.full_name as u_full_name',
+        'users.created_at as u_created_at',
+        'users.updated_at as u_updated_at'
+      )
+      .first()
 
-      tokenRecord = {
-        id: row.id,
-        tokenable_id: row.tokenable_id,
-        type: row.type,
-        name: row.name,
-        hash: row.hash,
-        abilities: row.abilities,
-        last_used_at: row.last_used_at,
-        expires_at: row.expires_at,
-        created_at: row.created_at,
-        updated_at: row.updated_at
-      }
+    if (!row) {
+      TokensGuard.tokenMemoryCache.delete(hash)
+      throw new AuthenticationException('存取權杖不存在或已被註銷 (Token revoked or not found)', 'E_UNAUTHORIZED')
+    }
 
-      safeUser = {
-        id: row.u_id,
-        username: row.u_username,
-        email: row.u_email,
-        full_name: row.u_full_name,
-        created_at: row.u_created_at,
-        updated_at: row.u_updated_at
-      }
-    } else {
-      // 記憶體資料庫 fallback
-      tokenRecord = await Database.from('auth_access_tokens').where('hash', hash).first()
-      if (!tokenRecord) {
-        TokensGuard.tokenMemoryCache.delete(hash)
-        throw new AuthenticationException('存取權杖不存在或已被註銷 (Token revoked or not found)', 'E_UNAUTHORIZED')
-      }
+    if (!row.u_id && !row.u_username) {
+      throw new AuthenticationException('查無此權杖對應之使用者帳號', 'E_USER_NOT_FOUND')
+    }
 
-      const user = await Database.from('users').where('id', tokenRecord.tokenable_id).first()
-      if (!user) {
-        throw new AuthenticationException('查無此權杖對應之使用者帳號', 'E_USER_NOT_FOUND')
-      }
+    tokenRecord = {
+      id: row.id,
+      tokenable_id: row.tokenable_id,
+      type: row.type,
+      name: row.name,
+      hash: row.hash,
+      abilities: row.abilities,
+      last_used_at: row.last_used_at,
+      expires_at: row.expires_at,
+      created_at: row.created_at,
+      updated_at: row.updated_at
+    }
 
-      const { password, ...extractedSafeUser } = user
-      safeUser = extractedSafeUser as UserPayload
+    safeUser = {
+      id: row.u_id,
+      username: row.u_username,
+      email: row.u_email,
+      full_name: row.u_full_name,
+      created_at: row.u_created_at,
+      updated_at: row.u_updated_at
     }
 
     // 檢查有效期限

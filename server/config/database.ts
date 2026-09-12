@@ -30,7 +30,7 @@ export interface DatabaseConfig {
 }
 
 const dbHost = env.get('DB_HOST', '127.0.0.1')
-const dbPort = env.get('DB_PORT', 3306)
+const dbPort = Number(env.get('DB_PORT', 3306))
 const dbUser = env.get('DB_USER', 'root')
 const dbPassword = env.get('DB_PASSWORD', '')
 const dbName = env.get('DB_DATABASE', 'cf_first')
@@ -50,11 +50,11 @@ export const databaseConfig: DatabaseConfig = {
     postgres: {
       client: 'pg',
       host: dbHost,
-      port: env.get('DB_PORT', 5432),
+      port: dbPort,
       user: dbUser,
       password: dbPassword,
       database: dbName,
-      connectionString: databaseUrl || `postgresql://${dbUser}:${dbPassword}@${dbHost}:${env.get('DB_PORT', 5432)}/${dbName}`
+      connectionString: databaseUrl || `postgresql://${dbUser}:${dbPassword}@${dbHost}:${dbPort}/${dbName}`
     },
     mysql: {
       client: 'mysql2',

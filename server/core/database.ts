@@ -1,5 +1,8 @@
+import knex, { type Knex } from 'knex'
 import type { Env } from './types'
 import { dateTime } from './time'
+import { DriverFactory } from './drivers/driver_factory'
+import type { DatabaseDriver } from './drivers/types'
 
 export type IsolationLevels = 'read uncommitted' | 'read committed' | 'repeatable read' | 'serializable'
 
@@ -43,7 +46,13 @@ memoryDb.set('users', [
 export class QueryBuilder<T = any> {
   private options: QueryOptions
 
-  constructor(private table: string, private getEnv: () => Env | undefined, private inTransaction = false) {
+  constructor(
+    private table: string,
+    private getEnv: () => Env | undefined,
+    private inTransaction = false,
+    private getDriverInstance: () => DatabaseDriver = () => Database.getDriver(),
+    private getConnName: () => string = () => Database.getConnectionName()
+  ) {
     this.options = {
       table,
       fields: ['*'],
@@ -59,6 +68,21 @@ export class QueryBuilder<T = any> {
     this.options.joins = this.options.joins || []
     this.options.joins.push({
       type: 'LEFT',
+      table,
+      first,
+      operator,
+      second: secondCol,
+      aliasPrefix
+    })
+    return this
+  }
+
+  innerJoin(table: string, first: string, operatorOrSecond: string, second?: string, aliasPrefix?: string): this {
+    const operator = second !== undefined ? operatorOrSecond : '='
+    const secondCol = second !== undefined ? second : operatorOrSecond
+    this.options.joins = this.options.joins || []
+    this.options.joins.push({
+      type: 'INNER',
       table,
       first,
       operator,
@@ -102,18 +126,12 @@ export class QueryBuilder<T = any> {
     return this
   }
 
-  /**
-   * 悲觀鎖排他查詢 (AdonisJS Lucid query.forUpdate(...tableNames))
-   */
   forUpdate(...tableNames: string[]): this {
     this.options.lockMode = 'forUpdate'
     this.options.lockTables = tableNames
     return this
   }
 
-  /**
-   * 悲觀鎖共享查詢 (AdonisJS Lucid query.forShare(...tableNames))
-   */
   forShare(...tableNames: string[]): this {
     this.options.lockMode = 'forShare'
     this.options.lockTables = tableNames
@@ -128,59 +146,77 @@ export class QueryBuilder<T = any> {
     return this.options.lockTables
   }
 
+  private getKnexInstance(): Knex {
+    const driver = this.getDriverInstance()
+    const client = driver.knexClient
+    return knex({ client, useNullAsDefault: client === 'sqlite3' })
+  }
+
+  private applyWheresToKnex(q: any) {
+    if (this.options.wheres && this.options.wheres.length > 0) {
+      for (const w of this.options.wheres) {
+        if (w.operator === 'IN') {
+          q.whereIn(w.column, Array.isArray(w.value) ? w.value : [w.value])
+        } else {
+          q.where(w.column, w.operator, w.value)
+        }
+      }
+    }
+  }
+
   /**
-   * 編譯當前查詢為 SQL 字串與參數綁定陣列 (AdonisJS Lucid query.toSQL())
-   * 方言自動適配：MySQL / PostgreSQL 自動加上 FOR UPDATE / FOR SHARE，
-   * 而 SQLite / Cloudflare D1 與記憶體模式安全省略避免語法錯誤。
+   * 編譯當前查詢為 SQL 字串與參數綁定陣列 (支援 SQLite / Postgres / MySQL)
    */
   toSQL(): { sql: string; bindings: any[] } {
-    let sql = `SELECT ${this.options.fields!.join(', ')} FROM ${this.options.table}`
-    const bindings: any[] = []
+    const k = this.getKnexInstance()
+    let q = k(this.options.table)
+
+    if (this.options.fields && this.options.fields.length > 0) {
+      q.select(...this.options.fields)
+    } else {
+      q.select('*')
+    }
 
     if (this.options.joins && this.options.joins.length > 0) {
       for (const j of this.options.joins) {
-        sql += ` ${j.type} JOIN ${j.table} ON ${j.first} ${j.operator} ${j.second}`
+        if (j.type === 'LEFT') {
+          q.leftJoin(j.table, j.first, j.operator, j.second)
+        } else {
+          q.innerJoin(j.table, j.first, j.operator, j.second)
+        }
       }
     }
 
-    if (this.options.wheres && this.options.wheres.length > 0) {
-      const conditions = this.options.wheres.map((w) => {
-        if (w.operator === 'IN') {
-          const list = Array.isArray(w.value) ? w.value : [w.value]
-          if (list.length === 0) return '1 = 0'
-          bindings.push(...list)
-          return `${w.column} IN (${list.map(() => '?').join(', ')})`
-        }
-        bindings.push(w.value)
-        return `${w.column} ${w.operator} ?`
-      })
-      sql += ` WHERE ${conditions.join(' AND ')}`
-    }
+    this.applyWheresToKnex(q)
 
     if (this.options.orders && this.options.orders.length > 0) {
-      const orderClauses = this.options.orders.map((o) => `${o.column} ${o.direction}`)
-      sql += ` ORDER BY ${orderClauses.join(', ')}`
+      for (const o of this.options.orders) {
+        q.orderBy(o.column, o.direction.toLowerCase())
+      }
     }
 
     if (this.options.limitCount !== undefined) {
-      sql += ` LIMIT ${this.options.limitCount}`
+      q.limit(this.options.limitCount)
     }
     if (this.options.offsetCount !== undefined) {
-      sql += ` OFFSET ${this.options.offsetCount}`
+      q.offset(this.options.offsetCount)
     }
 
-    const conn = Database.getConnectionName()
-    const env = this.getEnv()
-    const isSqliteOrD1 = conn === 'd1' || conn === 'sqlite' || (!conn && !!env?.DB)
+    const driver = this.getDriverInstance()
+    const isSqliteOrD1 = driver.knexClient === 'sqlite3'
     if (!isSqliteOrD1 && this.options.lockMode) {
-      const lockSql = this.options.lockMode === 'forUpdate' ? 'FOR UPDATE' : 'FOR SHARE'
-      const tablesSql = this.options.lockTables && this.options.lockTables.length > 0
-        ? ` OF ${this.options.lockTables.join(', ')}`
-        : ''
-      sql += ` ${lockSql}${tablesSql}`
+      if (this.options.lockMode === 'forUpdate') {
+        q.forUpdate(...(this.options.lockTables || []))
+      } else {
+        q.forShare(...(this.options.lockTables || []))
+      }
     }
 
-    return { sql, bindings }
+    const compiled = q.toSQL()
+    return {
+      sql: compiled.sql,
+      bindings: (compiled.bindings || []) as any[]
+    }
   }
 
   async first(): Promise<T | null> {
@@ -189,8 +225,13 @@ export class QueryBuilder<T = any> {
   }
 
   async all(): Promise<T[]> {
+    const conn = this.getConnName()
+    const isD1 = conn === 'd1' || conn === 'sqlite'
+    const driver = this.getDriverInstance()
     const env = this.getEnv()
-    if (env?.DB) {
+
+    // 1. 若處於 Worker 執行期且為 D1，調用原生 env.DB
+    if (isD1 && env?.DB && typeof env.DB.prepare === 'function') {
       try {
         const { sql, bindings } = this.toSQL()
         const stmt = env.DB.prepare(sql)
@@ -199,9 +240,17 @@ export class QueryBuilder<T = any> {
       } catch (err) {
         console.warn(`[Database] D1 查詢異常 (${err})，自動切換至記憶體資料庫。`)
       }
+    } else {
+      // 2. 其餘情況（包含 Ace CLI 與外部資料庫）：統一交由 Driver 執行
+      try {
+        const { sql, bindings } = this.toSQL()
+        return await driver.query<T>(sql, bindings)
+      } catch (err) {
+        if (!isD1) throw err
+      }
     }
 
-    // 記憶體資料庫 fallback
+    // 3. 記憶體資料庫 fallback (純展示/離線兜底)
     const tableData = (memoryDb.get(this.options.table) || []) as any[]
     let filtered = tableData.map((r) => ({ ...r }))
 
@@ -220,7 +269,6 @@ export class QueryBuilder<T = any> {
                 extended[`${j.aliasPrefix}${k}`] = v
               }
             } else {
-              // 模擬 LEFT JOIN NULL 填入
               extended[`${j.aliasPrefix}id`] = null
             }
           }
@@ -268,18 +316,22 @@ export class QueryBuilder<T = any> {
   }
 
   async insert(data: Record<string, any> | Array<Record<string, any>>): Promise<any> {
-    const env = this.getEnv()
+    const conn = this.getConnName()
+    const isD1 = conn === 'd1' || conn === 'sqlite'
     const now = dateTime.now().toISO() || new Date().toISOString()
+    const driver = this.getDriverInstance()
+    const env = this.getEnv()
 
-    if (Array.isArray(data)) {
-      if (data.length === 0) return []
-      const records = data.map((d) => ({
-        ...d,
-        created_at: d.created_at || now,
-        updated_at: d.updated_at || now
-      }))
+    // 1. 若處於 Worker 執行期且為 D1，透過原生 env.DB 寫入
+    if (isD1 && env?.DB && typeof env.DB.prepare === 'function') {
+      if (Array.isArray(data)) {
+        if (data.length === 0) return []
+        const records = data.map((d) => ({
+          ...d,
+          created_at: d.created_at || now,
+          updated_at: d.updated_at || now
+        }))
 
-      if (env?.DB) {
         try {
           const keys = Array.from(new Set(records.flatMap((r) => Object.keys(r))))
           const rowPlaceholder = `(${keys.map(() => '?').join(', ')})`
@@ -287,49 +339,89 @@ export class QueryBuilder<T = any> {
           const values = records.flatMap((r) => keys.map((k) => (r[k] === undefined ? null : r[k])))
           const sql = `INSERT INTO ${this.options.table} (${keys.join(', ')}) VALUES ${placeholders}`
           const res = await env.DB.prepare(sql).bind(...values).run()
-          const startId = res.meta.last_row_id ? res.meta.last_row_id - records.length + 1 : Date.now()
+          const startId = res.meta?.last_row_id ? res.meta.last_row_id - records.length + 1 : Date.now()
           return records.map((r, i) => ({ id: r.id || startId + i, ...r }))
         } catch (err) {
           console.warn(`[Database] D1 批次插入異常 (${err})，切換至記憶體資料庫`)
         }
+      } else {
+        const record = { ...data, created_at: data.created_at || now, updated_at: now }
+        try {
+          const keys = Object.keys(record)
+          const placeholders = keys.map(() => '?').join(', ')
+          const values = Object.values(record).map((v) => (v === undefined ? null : v))
+          const sql = `INSERT INTO ${this.options.table} (${keys.join(', ')}) VALUES (${placeholders})`
+          const res = await env.DB.prepare(sql).bind(...values).run()
+          return { id: res.meta?.last_row_id || Date.now(), ...record }
+        } catch (err) {
+          console.warn(`[Database] D1 插入異常 (${err})，切換至記憶體資料庫`)
+        }
       }
-
-      const tableData = memoryDb.get(this.options.table) || []
-      const startId = tableData.length > 0 ? Math.max(...tableData.map((r: any) => r.id || 0)) + 1 : 1
-      const insertedList = records.map((r, idx) => ({ id: r.id || startId + idx, ...r }))
-      tableData.push(...insertedList)
-      memoryDb.set(this.options.table, tableData)
-      return insertedList
-    }
-
-    const record = { ...data, created_at: data.created_at || now, updated_at: now }
-
-    if (env?.DB) {
+    } else {
+      // 2. 其餘情況（包含 Ace CLI 與外部資料庫）：統一交由 Driver 執行
       try {
-        const keys = Object.keys(record)
-        const placeholders = keys.map(() => '?').join(', ')
-        const values = Object.values(record).map((v) => (v === undefined ? null : v))
-        const sql = `INSERT INTO ${this.options.table} (${keys.join(', ')}) VALUES (${placeholders})`
-        const res = await env.DB.prepare(sql).bind(...values).run()
-        return { id: res.meta.last_row_id || Date.now(), ...record }
+        const records = Array.isArray(data) ? data : [data]
+        if (records.length === 0) return []
+        const prepared = records.map((r) => ({
+          ...r,
+          created_at: r.created_at || now,
+          updated_at: r.updated_at || now
+        }))
+
+        const k = this.getKnexInstance()
+        let insertQuery = k(this.options.table).insert(prepared)
+        if (driver.knexClient === 'pg') {
+          insertQuery = insertQuery.returning('*')
+        }
+        const compiled = insertQuery.toSQL()
+        const sql = compiled.sql
+        const bindings = [...(compiled.bindings || [])]
+        if (driver.knexClient === 'pg') {
+          const rows = await driver.query(sql, bindings as any[])
+          return Array.isArray(data) ? rows : rows[0]
+        } else {
+          const res = await driver.executeRun(sql, bindings as any[])
+          const startId = res.last_row_id ? res.last_row_id - records.length + 1 : Date.now()
+          const insertedList = prepared.map((r, i) => ({ id: r.id || startId + i, ...r }))
+          return Array.isArray(data) ? insertedList : insertedList[0]
+        }
       } catch (err) {
-        console.warn(`[Database] D1 插入異常 (${err})，切換至記憶體資料庫`)
+        if (!isD1) throw err
+        console.warn(`[Database] Driver 插入異常 (${err})，切換至記憶體資料庫`)
       }
     }
 
+    // 3. 記憶體資料庫 Fallback (僅限 D1/SQLite 本地測試容錯)
+    const records = (Array.isArray(data) ? data : [data]).map((r) => ({
+      ...r,
+      created_at: r.created_at || now,
+      updated_at: now
+    }))
     const tableData = memoryDb.get(this.options.table) || []
-    const newId = tableData.length > 0 ? Math.max(...tableData.map((r: any) => r.id || 0)) + 1 : 1
-    const newRecord = { id: newId, ...record }
-    tableData.push(newRecord)
+    const startId = tableData.length > 0 ? Math.max(...tableData.map((r: any) => r.id || 0)) + 1 : 1
+    const insertedList = records.map((r, idx) => ({ id: r.id || startId + idx, ...r }))
+    tableData.push(...insertedList)
     memoryDb.set(this.options.table, tableData)
-    return newRecord
+    return Array.isArray(data) ? insertedList : insertedList[0]
   }
 
   async update(data: Record<string, any>): Promise<number> {
-    const env = this.getEnv()
+    const conn = this.getConnName()
+    const isD1 = conn === 'd1' || conn === 'sqlite'
     const now = dateTime.now().toISO() || new Date().toISOString()
     const record = { ...data, updated_at: now }
+    const driver = this.getDriverInstance()
 
+    if (!isD1) {
+      const k = this.getKnexInstance()
+      let q = k(this.options.table)
+      this.applyWheresToKnex(q)
+      const { sql, bindings } = q.update(record).toSQL()
+      const res = await driver.executeRun(sql, bindings as any[])
+      return res.changes
+    }
+
+    const env = this.getEnv()
     if (env?.DB) {
       try {
         const sets = Object.keys(record).map((k) => `${k} = ?`).join(', ')
@@ -346,7 +438,7 @@ export class QueryBuilder<T = any> {
         }
 
         const res = await env.DB.prepare(sql).bind(...bindings).run()
-        return res.meta.changes || 0
+        return res.meta?.changes || 0
       } catch (err) {
         console.warn(`[Database] D1 更新異常 (${err})，切換至記憶體資料庫`)
       }
@@ -368,6 +460,19 @@ export class QueryBuilder<T = any> {
   }
 
   async delete(): Promise<number> {
+    const conn = this.getConnName()
+    const isD1 = conn === 'd1' || conn === 'sqlite'
+    const driver = this.getDriverInstance()
+
+    if (!isD1) {
+      const k = this.getKnexInstance()
+      let q = k(this.options.table)
+      this.applyWheresToKnex(q)
+      const { sql, bindings } = q.delete().toSQL()
+      const res = await driver.executeRun(sql, bindings as any[])
+      return res.changes
+    }
+
     const env = this.getEnv()
     if (env?.DB) {
       try {
@@ -381,7 +486,7 @@ export class QueryBuilder<T = any> {
           sql += ` WHERE ${conditions.join(' AND ')}`
         }
         const res = await env.DB.prepare(sql).bind(...bindings).run()
-        return res.meta.changes || 0
+        return res.meta?.changes || 0
       } catch (err) {
         console.warn(`[Database] D1 刪除異常 (${err})，切換至記憶體資料庫`)
       }
@@ -408,7 +513,8 @@ export class TransactionClient {
     public readonly isolationLevel: IsolationLevels = 'serializable',
     private getEnv: () => Env | undefined,
     private snapshot: Map<string, string>,
-    private connectionName: string = 'd1'
+    private connectionName: string = 'd1',
+    private driverInstance?: DatabaseDriver
   ) {}
 
   getConnectionName(): string {
@@ -416,10 +522,19 @@ export class TransactionClient {
   }
 
   from<T = any>(table: string): QueryBuilder<T> {
-    return new QueryBuilder<T>(table, this.getEnv, true)
+    return new QueryBuilder<T>(
+      table,
+      this.getEnv,
+      true,
+      () => this.driverInstance || Database.getDriver(),
+      () => this.connectionName
+    )
   }
 
   async rawQuery<T = any>(sql: string, bindings: any[] = []): Promise<T[]> {
+    if (this.driverInstance && this.connectionName !== 'd1' && this.connectionName !== 'sqlite') {
+      return await this.driverInstance.query<T>(sql, bindings)
+    }
     const env = this.getEnv()
     if (env?.DB) {
       const { results } = await env.DB.prepare(sql).bind(...bindings).all<T>()
@@ -431,12 +546,18 @@ export class TransactionClient {
   async commit(): Promise<void> {
     if (this.isCompleted) return
     this.isCompleted = true
+    if (this.connectionName === 'postgres' || this.connectionName === 'mysql') {
+      await this.rawQuery('COMMIT')
+    }
   }
 
   async rollback(): Promise<void> {
     if (this.isCompleted) return
     this.isCompleted = true
     this.isRolledBack = true
+    if (this.connectionName === 'postgres' || this.connectionName === 'mysql') {
+      await this.rawQuery('ROLLBACK')
+    }
     for (const [table, json] of this.snapshot.entries()) {
       memoryDb.set(table, JSON.parse(json))
     }
@@ -460,7 +581,7 @@ export class Database {
   }
 
   /**
-   * 切換連線配置 (例如 'd1' | 'pg' | 'mysql' | 'sqlite')
+   * 切換連線配置 (例如 'd1' | 'postgres' | 'mysql' | 'sqlite')
    */
   static connection(name: string): typeof Database {
     this.connectionName = name
@@ -471,44 +592,67 @@ export class Database {
     return this.connectionName
   }
 
+  static getDriver(): DatabaseDriver {
+    return DriverFactory.getDriver({
+      connectionName: this.connectionName,
+      env: this.currentEnv
+    })
+  }
+
   static from<T = any>(table: string): QueryBuilder<T> {
-    return new QueryBuilder<T>(table, () => this.currentEnv)
+    return new QueryBuilder<T>(
+      table,
+      () => this.currentEnv,
+      false,
+      () => this.getDriver(),
+      () => this.connectionName
+    )
   }
 
   static async rawQuery<T = any>(sql: string, bindings: any[] = []): Promise<T[]> {
+    const isD1 = this.connectionName === 'd1' || this.connectionName === 'sqlite'
+    if (!isD1) {
+      return await this.getDriver().query<T>(sql, bindings)
+    }
     if (this.currentEnv?.DB) {
       const { results } = await this.currentEnv.DB.prepare(sql).bind(...bindings).all<T>()
       return (results as T[]) || []
     }
-    return []
+    return await this.getDriver().query<T>(sql, bindings)
   }
 
   /**
    * 事務支援 (AdonisJS Database.transaction)
-   * 支援 isolationLevel 隔離等級設定 ('read uncommitted' | 'read committed' | 'repeatable read' | 'serializable')
    */
   static async transaction<T>(
     callback: (trx: TransactionClient) => Promise<T>,
     options?: TransactionOptions
   ): Promise<T> {
     const isolationLevel = options?.isolationLevel || 'serializable'
+    const isExternal = this.connectionName === 'mysql' || this.connectionName === 'postgres'
+    const driver = this.getDriver()
 
-    // 建立記憶體快照以便事務失敗時復原
+    if (isExternal) {
+      try {
+        await driver.executeRaw(`SET TRANSACTION ISOLATION LEVEL ${isolationLevel.toUpperCase()}`)
+        await driver.executeRaw('BEGIN')
+      } catch (err) {
+        console.warn(`[Database] 設定隔離等級或開啟事務失敗:`, err)
+      }
+    }
+
     const snapshot = new Map<string, string>()
     for (const [table, rows] of memoryDb.entries()) {
       snapshot.set(table, JSON.stringify(rows))
     }
 
-    const trx = new TransactionClient(isolationLevel, () => this.currentEnv, snapshot, this.connectionName)
-
-    // 若底層為外部連線 (MySQL / PostgreSQL)，發送 SET TRANSACTION ISOLATION LEVEL
-    if (this.connectionName === 'mysql' || this.connectionName === 'postgres') {
-      try {
-        await this.rawQuery(`SET TRANSACTION ISOLATION LEVEL ${isolationLevel.toUpperCase()}`)
-      } catch (err) {
-        console.warn(`[Database] 設定隔離等級 ${isolationLevel} 異常:`, err)
-      }
-    }
+    const trx = new TransactionClient(
+      isolationLevel,
+      () => this.currentEnv,
+      snapshot,
+      this.connectionName,
+      driver
+    )
 
     try {
       const result = await callback(trx)
