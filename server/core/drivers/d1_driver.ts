@@ -4,8 +4,15 @@ import { execSync } from 'child_process'
 import { fileURLToPath } from 'url'
 import type { DatabaseDriver, MigrationRecord, ExecuteResult } from './types'
 
-const __filename = fileURLToPath(import.meta.url)
-const __dirname = path.dirname(__filename)
+let __dirname = ''
+try {
+  if (typeof import.meta !== 'undefined' && import.meta?.url) {
+    const __filename = fileURLToPath(import.meta.url)
+    __dirname = path.dirname(__filename)
+  }
+} catch {
+  __dirname = ''
+}
 
 export interface D1DriverOptions {
   isRemote?: boolean
@@ -24,7 +31,7 @@ export class D1Driver implements DatabaseDriver {
   constructor(options: D1DriverOptions = {}) {
     this.isRemote = !!options.isRemote
     this.env = options.env
-    this.projectRoot = options.projectRoot || path.resolve(__dirname, '../../../')
+    this.projectRoot = options.projectRoot || (__dirname ? path.resolve(__dirname, '../../../') : (typeof process !== 'undefined' && typeof process.cwd === 'function' ? process.cwd() : '.'))
   }
 
   setEnv(env: any) {
@@ -32,6 +39,7 @@ export class D1Driver implements DatabaseDriver {
   }
 
   private findLocalSqlitePath(): string | null {
+    if (typeof fs === 'undefined' || typeof fs.existsSync !== 'function') return null
     const d1Dir = path.join(this.projectRoot, '.wrangler/state/v3/d1')
     if (!fs.existsSync(d1Dir)) return null
 
