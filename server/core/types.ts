@@ -5,6 +5,7 @@ import type { AuthManager, UserPayload } from './auth'
 
 export interface Env {
   DB?: D1Database
+  AI?: any
   JWT_SECRET?: string
   APP_KEY?: string
   TZ?: string

@@ -3,6 +3,7 @@ import { HttpException } from "../core/exception_handler"
 import AuthController from "../app/controllers/auth_controller"
 import NotesController from "../app/controllers/notes_controller"
 import UsersController from "../app/controllers/users_controller"
+import AiController from "../app/controllers/ai_controller"
 import { middleware } from "./kernel"
 import { dateTime, DateTime } from "../core/time"
 import { appConfig } from "../config/app"
@@ -45,6 +46,10 @@ router
 
     // 4.1 使用者列表路由 (/api/users，需要 Access Token Auth)
     router.get("/users", [UsersController, "index"]).use([middleware.auth("tokens")])
+
+    // 4.2 Cloudflare Workers AI 路由 (/api/ai/generate 與 /api/ai/usage)
+    router.post("/ai/generate", [AiController, "generate"])
+    router.get("/ai/usage", [AiController, "usage"])
 
     // 5. Response Macro 測試路由 (/api/macro-test)
     router.get("/macro-test", (ctx) => {

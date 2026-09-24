@@ -16,6 +16,9 @@
   //   "NODE_ENV": "development",
   //   "DB_CONNECTION": "d1"
   // },
+  "ai": {
+    "binding": "AI"
+  },
   "d1_databases": [
     {
       "binding": "DB",
